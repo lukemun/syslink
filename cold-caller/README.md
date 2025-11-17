@@ -104,6 +104,51 @@ After initiating a call, the script will output:
 
 Monitor all calls at: [dashboard.vapi.ai/calls](https://dashboard.vapi.ai/calls)
 
+## Call Outcome Handling
+
+`fetch-call-results.js` normalizes every Vapi `endedReason` into one of our internal outcomes, updates `contacted.json`, and `batch-caller.js` then decides what to do during the next wave. The diagram below shows the flow.
+
+```
+Call attempt
+   |
+   v
+fetch-call-results.js (map outcome)
+   |
+   +--> answered  ----> mark contact reached ---> skip property next wave
+   |
+   +--> voicemail/no_answer/busy ---> contact pending ---> try next number
+   |
+   +--> failed  ----> keep same number eligible (transport error)
+   |
+   +--> in_progress ---> leave property on hold until results fetched
+```
+
+| Vapi signal | Internal outcome | Next-wave behavior |
+|-------------|------------------|--------------------|
+| `status=queued/ringing/in-progress` | `in_progress` | Property is skipped until we fetch results again. |
+| `endedReason` `assistant-ended-call`, `customer-ended-call`, `assistant-said-end-call-phrase`, or >10 s call duration | `answered` | Contact marked `reached`; property is considered handled and skipped moving forward. |
+| `endedReason` `voicemail` or voicemail detected in assistant messages | `voicemail` | Contact stays `pending`; next wave tries the next untried number for that contact. |
+| `endedReason` `customer-did-not-answer`, `customer-did-not-give-microphone-permission`, `silence-timed-out`, or unknown end reason | `no_answer` | Contact stays `pending`; next wave tries the next untried number. |
+| `endedReason` `customer-busy` | `busy` | Contact stays `pending`; next wave tries the next untried number. |
+| `endedReason` `twilio-failed-to-connect-call` or `status=failed/error` | `failed` | Treated as transport errors: the same phone number remains eligible because `batch-caller` ignores `failed` attempts when tracking tried numbers. |
+
+**Key behaviors**
+- `contacted.json` is the source of truth; always run `node fetch-call-results.js` before starting a new wave so the latest outcomes influence retries.
+- Contacts with any non-answered outcome remain `pending` until every phone number has been tried.
+- `failed` attempts (e.g., Twilio connect issues) do **not** count against the phone number, so the next wave will retry the same number automatically.
+- Once any contact for a property is marked `reached`, `batch-caller` stops scheduling that property altogether.
+
+### Retrofix older silence timeouts
+
+Before November 2025, calls that ended with Vapi's `silence-timed-out` reason could be misclassified as `answered` if they lasted longer than 10 seconds. Run the helper script below once to clean up legacy data so those contacts re-enter the dialing queue:
+
+```bash
+cd /Users/lukemunro/Clones/syslink/cold-caller
+node retrofix-silence-timeout.js
+```
+
+Add `--dry-run` to preview changes without writing to `contacted.json`. The script re-fetches call details from Vapi, re-labels the affected attempts as `no_answer`, and automatically sets each contact back to `pending` so the next batch wave tries the next number.
+
 ## Troubleshooting
 
 ### Missing Environment Variables

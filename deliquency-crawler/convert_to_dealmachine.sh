@@ -25,3 +25,4 @@ python json_to_dealmachine_csv.py
 echo ""
 echo "✓ Done! You can now upload dealmachine_import.csv to DealMachine."
 
+

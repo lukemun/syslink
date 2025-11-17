@@ -27,6 +27,7 @@
 import * as dotenv from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import streetSuffix from 'street-suffix';
 
 // Get current directory
 const __filename = fileURLToPath(import.meta.url);
@@ -40,7 +41,7 @@ const VAPI_API_KEY = process.env.VAPI_API_KEY!;
 const VAPI_PHONE_NUMBER_ID = process.env.VAPI_PHONE_NUMBER_ID || '1cacb379-9cbe-408e-9ba2-c1a2134fd05d';
 const VAPI_ASSISTANT_ID = process.env.VAPI_ASSISTANT_ID || '9f56ad7a-9975-4e7b-ad51-13e7fb509ded';
 let TARGET_PHONE_NUMBER = process.env.TARGET_PHONE_NUMBER || '+16504006400';
-const CALL_BACK_NUMBER = '+16464923788';
+const CALL_BACK_NUMBER = '16464923788';
 const AGENT_NAME = process.env.AGENT_NAME || 'Elliot';
 const CLOSER_NAME = process.env.CLOSER_NAME || 'Michael';
 const PROPERTY_ADDRESS = process.env.PROPERTY_ADDRESS!;
@@ -49,11 +50,54 @@ const FIRST_NAME = process.env.FIRST_NAME!;
 const TIME1 = process.env.TIME1 || '2:00 PM';
 const TIME2 = process.env.TIME2 || '4:30 PM';
 
-// Create short address (street only, no city/state/zip)
-const SHORT_ADDRESS = PROPERTY_ADDRESS ? PROPERTY_ADDRESS.split(',')[0].trim() : '';
+// Create short address (street only, no city/state/zip) and expand suffixes for speech
+const SHORT_ADDRESS = createShortAddress(PROPERTY_ADDRESS);
 
 // Testing override
 // TARGET_PHONE_NUMBER = '+16504006400';
+
+function createShortAddress(fullAddress?: string): string {
+  if (!fullAddress) {
+    return '';
+  }
+
+  const [streetLine = ''] = fullAddress.split(',');
+  const trimmedStreetLine = streetLine.trim();
+
+  if (!trimmedStreetLine) {
+    return '';
+  }
+
+  return expandStreetSuffixForSpeech(trimmedStreetLine);
+}
+
+function expandStreetSuffixForSpeech(streetLine: string): string {
+  const tokens = streetLine.split(/\s+/).filter(Boolean);
+
+  if (tokens.length === 0) {
+    return streetLine;
+  }
+
+  const suffixIndex = tokens.length - 1;
+  const suffixToken = tokens[suffixIndex];
+  const match = suffixToken.match(/^([A-Za-z]+)([^A-Za-z]*)$/);
+
+  if (!match) {
+    return streetLine;
+  }
+
+  const [, baseSuffix, trailing = ''] = match;
+  const expanded = streetSuffix.expand(baseSuffix);
+
+  if (!expanded) {
+    return streetLine;
+  }
+
+  const readableSuffix = expanded.charAt(0) + expanded.slice(1).toLowerCase();
+  tokens[suffixIndex] = `${readableSuffix}${trailing}`;
+
+  return tokens.join(' ');
+}
 
 interface CallConfig {
   vapiApiKey: string;
@@ -95,13 +139,13 @@ async function makeCall(config: CallConfig) {
           voicemailDetection: {
             provider: 'vapi',
             backoffPlan: {
-              startAtSeconds: 2,
+              startAtSeconds: 0,
               frequencySeconds: 2.5,
               maxRetries: 5,
             },
             beepMaxAwaitSeconds: 25,
           },
-          voicemailMessage: `Hi, this is ${config.variableValues.AGENT_NAME} with Florida Cash Home Buyers. I was calling about the property at ${config.variableValues.SHORT_ADDRESS} in ${config.variableValues.PROPERTY_CITY}. We'd like to speak with you about a potential offer. Please give us a callback at ${config.callBackNumber}. Again, that's ${config.callBackNumber}. Thanks, and have a great day.`,
+          voicemailMessage: `Hi, sorry to bother you, this is ${config.variableValues.AGENT_NAME} with Florida Cash Home Buyers. I was calling about the property at ${config.variableValues.SHORT_ADDRESS}. We'd like to speak with you about a potential offer. Please give us a callback at ${config.callBackNumber}. Again, that's ${config.callBackNumber}. Thanks, and have a great day.`,
         },
         customer: { 
           number: config.targetNumber,

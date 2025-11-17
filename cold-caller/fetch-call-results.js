@@ -165,6 +165,14 @@ function mapVapiOutcome(callDetails) {
       return 'busy';
     }
     
+    if (endedReason === 'twilio-failed-to-connect-call') {
+      return 'failed';
+    }
+    
+    if (endedReason === 'silence-timed-out') {
+      return 'no_answer';
+    }
+    
     // Check if call had meaningful duration (answered)
     if (callDetails.startedAt && callDetails.endedAt) {
       const durationMs = new Date(callDetails.endedAt) - new Date(callDetails.startedAt);
@@ -200,6 +208,7 @@ function updateContactOutcome(contacted, contactId, vapiCallId, outcome, callDet
   // Update the attempt
   attempt.outcome = outcome;
   attempt.updatedAt = new Date().toISOString();
+  attempt.endedReason = callDetails.endedReason || null;
   
   // Add call duration if available
   if (callDetails.startedAt && callDetails.endedAt) {

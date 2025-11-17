@@ -1,0 +1,10 @@
+# Generated alert data
+california-alerts.json
+*.json
+
+# Logs
+*.log
+
+# Node modules (if package.json is added later)
+node_modules/
+
