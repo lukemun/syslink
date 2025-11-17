@@ -128,6 +128,14 @@ function convertToJSON(rows) {
     if (!addressMap[propertyAddress]) {
       addressMap[propertyAddress] = {
         property_address: propertyAddress,
+        estimated_value: row.estimated_value || '',
+        equity_percent: row.equity_percent || '',
+        equity_amount: row.equity_amount || '',
+        mortgage_amount: row.mortgage_amount || '',
+        mtg1_est_loan_balance: row.mtg1_est_loan_balance || '',
+        mtg1_est_payment_amount: row.mtg1_est_payment_amount || '',
+        lender_name: row.lender_name || '',
+        dealmachine_url: row.dealmachine_url || '',
         contacts: []
       };
     }

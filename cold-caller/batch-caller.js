@@ -40,6 +40,8 @@ const __dirname = path.dirname(__filename);
 const CONTACTS_FILE = path.join(__dirname, '../deliquency-crawler/contacts.json');
 const CONTACTED_FILE = path.join(__dirname, '../deliquency-crawler/contacted.json');
 const COLD_CALLER_SCRIPT = path.join(__dirname, 'make-call.ts');
+const CALLS_PER_BATCH = 4;
+const BATCH_DELAY_MS = 90000; // 1 minute stagger between call batches
 
 /**
  * Load contacts from JSON file
@@ -123,7 +125,8 @@ function recordCallAttempt(contactId, contactName, propertyAddress, phoneNumber,
   const attempt = {
     timestamp,
     phone: phoneNumber,
-    outcome
+    outcome,
+    endedReason: null
   };
   
   // Add Vapi call ID if available
@@ -204,7 +207,34 @@ function getTriedNumbers(contactId, contacted) {
   if (!contacted[contactId] || !contacted[contactId].attempts) {
     return [];
   }
-  return contacted[contactId].attempts.map(a => a.phone);
+  
+  const numbersToSkip = new Set();
+  const twilioFailCounts = {};
+  
+  for (const attempt of contacted[contactId].attempts) {
+    if (!attempt.phone) {
+      continue;
+    }
+    
+    // Any non-failed outcome means we've already meaningfully tried this number
+    if (attempt.outcome && attempt.outcome !== 'failed') {
+      numbersToSkip.add(attempt.phone);
+      continue;
+    }
+    
+    // Track consecutive Twilio connection failures per phone
+    if (
+      attempt.outcome === 'failed' &&
+      attempt.endedReason === 'twilio-failed-to-connect-call'
+    ) {
+      twilioFailCounts[attempt.phone] = (twilioFailCounts[attempt.phone] || 0) + 1;
+      if (twilioFailCounts[attempt.phone] >= 2) {
+        numbersToSkip.add(attempt.phone);
+      }
+    }
+  }
+  
+  return Array.from(numbersToSkip);
 }
 
 /**
@@ -283,7 +313,8 @@ function extractCity(address) {
  * 
  * @returns {Promise<{success: boolean, outcome: string, phone: string, vapiCallId: string|null}>}
  */
-async function makeCall(contact, propertyAddress, contacted) {
+async function makeCall(contact, propertyAddress, contacted, options = {}) {
+  const { dryRun = false } = options;
   const triedNumbers = getTriedNumbers(contact.contact_id, contacted);
   const phone = getBestPhone(contact, triedNumbers);
   
@@ -304,13 +335,17 @@ async function makeCall(contact, propertyAddress, contacted) {
   const city = extractCity(propertyAddress);
   
   const attemptCount = triedNumbers.length + 1;
-  console.log(`\n📞 Calling: ${contact.name} (Attempt #${attemptCount})`);
+  const actionVerb = dryRun ? 'Simulating call for' : 'Calling';
+  console.log(`\n📞 ${actionVerb}: ${contact.name} (Attempt #${attemptCount})`);
   console.log(`   Phone: ${phone.number} (${phone.type})`);
   console.log(`   Status: ${phone.status}`);
   if (phone.do_not_call) {
     console.log(`   ⚠️  DO NOT CALL flag set`);
   }
   console.log(`   Property: ${propertyAddress}`);
+  if (dryRun) {
+    console.log(`   Mode: Dry run (no call will be placed)`);
+  }
   
   // Capture stdout to extract Vapi call ID
   let capturedOutput = '';
@@ -324,8 +359,16 @@ async function makeCall(contact, propertyAddress, contacted) {
       PROPERTY_CITY: city,
       FIRST_NAME: firstName,
     };
+    if (dryRun) {
+      env.DRY_RUN = 'true';
+    }
     
-    const caller = spawn('npx', ['tsx', COLD_CALLER_SCRIPT], {
+    const spawnArgs = ['tsx', COLD_CALLER_SCRIPT];
+    if (dryRun) {
+      spawnArgs.push('--dry-run');
+    }
+    
+    const caller = spawn('npx', spawnArgs, {
       env,
       stdio: ['inherit', 'pipe', 'inherit'] // Pipe stdout to capture it
     });
@@ -344,7 +387,7 @@ async function makeCall(contact, propertyAddress, contacted) {
     });
     
     caller.on('close', (code) => {
-      if (code === 0 && vapiCallId) {
+      if (code === 0 && (vapiCallId || dryRun)) {
         resolve(true);
       } else {
         if (code !== 0) {
@@ -365,6 +408,11 @@ async function makeCall(contact, propertyAddress, contacted) {
     return { success: false, outcome: 'failed', phone: phone.number, vapiCallId: null };
   }
   
+  if (dryRun) {
+    console.log(`   🧪 Dry run logged successfully\n`);
+    return { success: true, outcome: 'dry_run', phone: phone.number, vapiCallId: null };
+  }
+  
   if (!vapiCallId) {
     console.log(`   ⚠️  Call spawned but no Vapi call ID captured\n`);
     return { success: false, outcome: 'failed', phone: phone.number, vapiCallId: null };
@@ -379,6 +427,35 @@ async function makeCall(contact, propertyAddress, contacted) {
     phone: phone.number,
     vapiCallId
   };
+}
+
+async function runDryRunSimulation(propertyCallPlans, contacted, callsPerBatch, batchDelayMs) {
+  console.log('📋 Dry Run Preview - Logging via make-call.ts output:\n');
+  console.log(`📞 Calls per batch: ${callsPerBatch}`);
+  console.log(`⏱️  Delay between batches: ${batchDelayMs / 1000}s\n`);
+
+  let dryRunCallCount = 0;
+
+  for (const plan of propertyCallPlans) {
+    console.log(`\n🏠 Property: ${plan.address}`);
+    console.log(`   ${plan.allContactsToTryCount} contact(s) available, simulating ${plan.contactsToTry.length}`);
+
+    for (const contact of plan.contactsToTry) {
+      dryRunCallCount++;
+      await makeCall(contact, plan.address, contacted, { dryRun: true });
+    }
+  }
+
+  const safeCallsPerBatch = callsPerBatch || 1;
+  const dryRunBatches = Math.ceil(dryRunCallCount / safeCallsPerBatch);
+
+  console.log('\n═══════════════════════════════════════════════════════════');
+  console.log('📊 Dry Run Summary:');
+  console.log(`   📞 ${dryRunCallCount} call(s) would be made`);
+  console.log(`   🏠 ${propertyCallPlans.length} properties would be called`);
+  console.log(`   📦 ${dryRunBatches} batch(es) with ${batchDelayMs / 1000}s delays between them`);
+  console.log('\n💡 Remove --dry-run flag to make actual calls');
+  console.log('═══════════════════════════════════════════════════════════\n');
 }
 
 /**
@@ -442,11 +519,8 @@ async function main() {
   const waveSize = parseInt(numericArgs[0]) || 10;
   // If no contacts_per_property specified, use Infinity to call all contacts
   const contactsPerProperty = numericArgs[1] ? parseInt(numericArgs[1]) : Infinity;
-  // Batch size for concurrent calls (to respect Vapi's concurrency limit)
-  const batchSize = 5;
-  const batchDelayMs = 60000; // 1 minute between batches
   console.log(`🌊 Wave size: ${waveSize} properties per wave`);
-  console.log(`📦 Batch size: ${batchSize} properties per batch (${batchDelayMs / 1000}s delay between batches)`);
+  console.log(`📞 Calls per batch: ${CALLS_PER_BATCH} (delay ${BATCH_DELAY_MS / 1000}s between batches)`);
   console.log(`👥 Contacts per property: ${contactsPerProperty === Infinity ? 'all' : contactsPerProperty}\n`);
   
   // Select properties to call in this wave
@@ -476,174 +550,97 @@ async function main() {
   }
   
   console.log(`🎯 Selected ${propertiesToCall.length} properties for this wave\n`);
+
+  const propertyCallPlans = propertiesToCall.map(address => {
+    const propertyData = contacts[address];
+    
+    const allContactsToTry = propertyData.contacts.filter(contact => 
+      shouldTryContact(contact, contact.contact_id, contacted)
+    );
+    
+    const contactsToTry = allContactsToTry.slice(0, contactsPerProperty);
+    
+    return {
+      address,
+      allContactsToTryCount: allContactsToTry.length,
+      contactsToTry
+    };
+  });
+  
+  const totalPlannedContacts = propertyCallPlans.reduce(
+    (sum, plan) => sum + plan.contactsToTry.length,
+    0
+  );
+  
+  if (totalPlannedContacts === 0) {
+    console.log('⚠️  No eligible contacts to call after filtering.');
+    console.log('   All contacts are either reached, in progress, or lack numbers.\n');
+    return;
+  }
+  
+  // Dry run mode - invoke make-call.ts with --dry-run for full logging
+  if (isDryRun) {
+    await runDryRunSimulation(propertyCallPlans, contacted, CALLS_PER_BATCH, BATCH_DELAY_MS);
+    return;
+  }
   
   let callsInitiated = 0;
   let callsFailed = 0;
   
-  // Dry run mode - just show what would be called
-  if (isDryRun) {
-    console.log('📋 Dry Run Preview - Calls that would be made:\n');
+  const estimatedBatches = Math.ceil(totalPlannedContacts / CALLS_PER_BATCH);
+  console.log(`📦 Processing ${totalPlannedContacts} planned call(s) across ~${estimatedBatches} batch(es)\n`);
+  
+  let callsInCurrentBatch = 0;
+  let remainingContactsToProcess = totalPlannedContacts;
+  
+  for (const plan of propertyCallPlans) {
+    console.log(`\n🏠 Property: ${plan.address}`);
+    console.log(`   ${plan.allContactsToTryCount} contact(s) available, calling ${plan.contactsToTry.length}\n`);
     
-    // Split properties into batches for dry run preview too
-    const dryRunBatches = [];
-    for (let i = 0; i < propertiesToCall.length; i += batchSize) {
-      dryRunBatches.push(propertiesToCall.slice(i, i + batchSize));
-    }
+    let propertyInitiated = 0;
+    let propertyFailed = 0;
     
-    console.log(`📦 Would process ${dryRunBatches.length} batch(es) of up to ${batchSize} properties each\n`);
-    
-    for (let batchIndex = 0; batchIndex < dryRunBatches.length; batchIndex++) {
-      const batch = dryRunBatches[batchIndex];
-      const batchNum = batchIndex + 1;
+    for (const contact of plan.contactsToTry) {
+      const result = await makeCall(contact, plan.address, contacted);
+      remainingContactsToProcess--;
       
-      console.log(`${'═'.repeat(63)}`);
-      console.log(`📦 BATCH ${batchNum}/${dryRunBatches.length} (${batch.length} properties)`);
-      console.log(`${'═'.repeat(63)}\n`);
-      
-      for (const address of batch) {
-        const propertyData = contacts[address];
-        
-        console.log(`🏠 Property: ${address}`);
-        
-        // Get all contacts that should be tried
-        const allContactsToTry = propertyData.contacts.filter(contact => 
-          shouldTryContact(contact, contact.contact_id, contacted)
-        );
-        
-        // Limit to contactsPerProperty
-        const contactsToTry = allContactsToTry.slice(0, contactsPerProperty);
-        
-        console.log(`   ${allContactsToTry.length} contact(s) available, would call ${contactsToTry.length}:\n`);
-        
-        for (const contact of contactsToTry) {
-          const triedNumbers = getTriedNumbers(contact.contact_id, contacted);
-          const phone = getBestPhone(contact, triedNumbers);
-          
-          if (!phone) {
-            console.log(`   ⏭️  ${contact.name} - no available numbers`);
-            continue;
-          }
-          
-          // Format phone number
-          let targetNumber = phone.number.replace(/\D/g, '');
-          if (!targetNumber.startsWith('1') && targetNumber.length === 10) {
-            targetNumber = '1' + targetNumber;
-          }
-          targetNumber = '+' + targetNumber;
-          
-          const firstName = contact.name.split(' ')[0] || 'there';
-          const city = extractCity(address);
-          
-          console.log(`   📞 ${contact.name}`);
-          console.log(`      Phone: ${phone.number} (${phone.type})`);
-          console.log(`      Status: ${phone.status || 'Unknown'}`);
-          if (phone.do_not_call) {
-            console.log(`      ⚠️  DO NOT CALL flag set`);
-          }
-          console.log(`      First Name: ${firstName}`);
-          console.log(`      City: ${city}`);
-          console.log('');
-          
-          callsInitiated++;
-        }
-        
-        console.log('');
+      if (result.outcome === 'no_numbers') {
+        console.log(`   ⏭️  Skipping ${contact.name} - no available numbers\n`);
+        continue; // Skip if no numbers available
       }
       
-      // Show delay message between batches
-      if (batchIndex < dryRunBatches.length - 1) {
-        const delaySeconds = batchDelayMs / 1000;
-        console.log(`⏸️  Would wait ${delaySeconds} seconds before next batch...\n\n`);
-      }
-    }
-    
-    console.log('═══════════════════════════════════════════════════════════');
-    console.log(`📊 Dry Run Summary:`);
-    console.log(`   📞 ${callsInitiated} call(s) would be made`);
-    console.log(`   🏠 ${propertiesToCall.length} properties would be called`);
-    console.log(`   📦 ${dryRunBatches.length} batch(es) with ${batchDelayMs / 1000}s delays between them`);
-    console.log('\n💡 Remove --dry-run flag to make actual calls');
-    console.log('═══════════════════════════════════════════════════════════\n');
-    
-    return;
-  }
-  
-  // Split properties into batches to respect concurrency limits
-  const batches = [];
-  for (let i = 0; i < propertiesToCall.length; i += batchSize) {
-    batches.push(propertiesToCall.slice(i, i + batchSize));
-  }
-  
-  console.log(`📦 Processing ${batches.length} batch(es) of up to ${batchSize} properties each\n`);
-  
-  // Process each batch (normal mode)
-  for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-    const batch = batches[batchIndex];
-    const batchNum = batchIndex + 1;
-    
-    console.log(`\n${'═'.repeat(63)}`);
-    console.log(`📦 BATCH ${batchNum}/${batches.length} (${batch.length} properties)`);
-    console.log(`${'═'.repeat(63)}\n`);
-    
-    for (const address of batch) {
-      const propertyData = contacts[address];
-      
-      console.log(`\n🏠 Property: ${address}`);
-      
-      // Get all contacts that should be tried
-      const allContactsToTry = propertyData.contacts.filter(contact => 
-        shouldTryContact(contact, contact.contact_id, contacted)
+      // Record the attempt with Vapi call ID, name, and address
+      recordCallAttempt(
+        contact.contact_id,
+        contact.name,
+        plan.address,
+        result.phone,
+        result.outcome,
+        result.vapiCallId,
+        contacted
       );
       
-      // Limit to contactsPerProperty
-      const contactsToTry = allContactsToTry.slice(0, contactsPerProperty);
-      
-      console.log(`   ${allContactsToTry.length} contact(s) available, calling ${contactsToTry.length}\n`);
-      
-      let propertyInitiated = 0;
-      let propertyFailed = 0;
-      
-      // Call all contacts with their best phone number
-      for (const contact of contactsToTry) {
-        const result = await makeCall(contact, address, contacted);
-        
-        if (result.outcome === 'no_numbers') {
-          console.log(`   ⏭️  Skipping ${contact.name} - no available numbers\n`);
-          continue; // Skip if no numbers available
-        }
-        
-        // Record the attempt with Vapi call ID, name, and address
-        recordCallAttempt(
-          contact.contact_id,
-          contact.name,
-          address,
-          result.phone,
-          result.outcome,
-          result.vapiCallId,
-          contacted
-        );
-        
-        if (result.success) {
-          callsInitiated++;
-          propertyInitiated++;
-        } else {
-          callsFailed++;
-          propertyFailed++;
-        }
-        
-        // Small delay between calls to avoid rate limits
-        await new Promise(resolve => setTimeout(resolve, 200));
+      if (result.success) {
+        callsInitiated++;
+        propertyInitiated++;
+      } else {
+        callsFailed++;
+        propertyFailed++;
       }
       
-      console.log(`   📋 Property Summary: ${propertyInitiated} initiated, ${propertyFailed} failed\n`);
+      callsInCurrentBatch++;
+      
+      // Small delay between calls to avoid rate limits
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      if (callsInCurrentBatch >= CALLS_PER_BATCH && remainingContactsToProcess > 0) {
+        console.log(`\n⏸️  Waiting ${BATCH_DELAY_MS / 1000}s before next batch of calls...\n`);
+        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+        callsInCurrentBatch = 0;
+      }
     }
     
-    // Add delay between batches (except after the last batch)
-    if (batchIndex < batches.length - 1) {
-      const delaySeconds = batchDelayMs / 1000;
-      console.log(`\n⏸️  Waiting ${delaySeconds} seconds before next batch to respect concurrency limits...\n`);
-      await new Promise(resolve => setTimeout(resolve, batchDelayMs));
-    }
+    console.log(`   📋 Property Summary: ${propertyInitiated} initiated, ${propertyFailed} failed\n`);
   }
   
   console.log('═══════════════════════════════════════════════════════════');
