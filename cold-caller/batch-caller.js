@@ -41,7 +41,7 @@ const CONTACTS_FILE = path.join(__dirname, '../deliquency-crawler/contacts.json'
 const CONTACTED_FILE = path.join(__dirname, '../deliquency-crawler/contacted.json');
 const COLD_CALLER_SCRIPT = path.join(__dirname, 'make-call.ts');
 const CALLS_PER_BATCH = 4;
-const BATCH_DELAY_MS = 90000; // 1 minute stagger between call batches
+const BATCH_DELAY_MS = 40000; // 1 minute stagger between call batches
 
 /**
  * Load contacts from JSON file
