@@ -1,0 +1,24 @@
+{
+  "extends": "@tsconfig/node18/tsconfig.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "node",
+    "baseUrl": ".",
+    "paths": {
+      "@weather-crawler/core/*": ["../core/src/*"]
+    }
+  },
+  "include": [
+    "src/index.ts",
+    "src/config.ts",
+    "src/db.ts",
+    "src/fetch.ts",
+    "src/ingest.ts",
+    "src/utils/**/*.ts"
+  ],
+  "exclude": [
+    "src/lambda.ts",
+    "src/todo.ts",
+    "src/events/**"
+  ]
+}

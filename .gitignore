@@ -50,3 +50,6 @@ storage/
 screenshots/
 *.png
 
+
+# Shared module
+shared/node_modules/

@@ -1,0 +1,19 @@
+{
+  "name": "@weather-crawler/functions",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "sst bind vitest",
+    "typecheck": "tsc -noEmit"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/aws-lambda": "^8.10.159",
+    "@types/pg": "^8.11.10",
+    "vitest": "^4.0.10",
+    "sst": "^3.17.23"
+  }
+}
