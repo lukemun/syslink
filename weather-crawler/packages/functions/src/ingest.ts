@@ -1,36 +1,31 @@
-#!/usr/bin/env -S node --loader ts-node/esm
 /**
  * Ingest active NWS alerts into the weather_alerts Postgres table.
  *
  * Purpose:
- * - Reads filtered active alerts from active-alerts.json (written by fetch-active-alerts.js).
+ * - Accepts filtered active alerts data (from fetch module).
  * - Maps each alert feature to an AlertRow, computing is_damaged based on config + keyword matching.
- * - Upserts rows into the weather_alerts table via the alertsDb module.
+ * - Upserts rows into the weather_alerts table and enriches with zipcode mappings.
  *
  * Usage:
- *   node --loader ts-node/esm weather-alerts/ingest-active-alerts.ts
- *
- *   # Show verbose damage evaluation logs:
- *   DEBUG_DAMAGE=1 node --loader ts-node/esm weather-alerts/ingest-active-alerts.ts
+ *   import { ingestAlerts } from './ingest.js';
+ *   const data = await fetchAlerts();
+ *   await ingestAlerts(data);
  *
  * Environment:
  *   Requires DATABASE_URL for Postgres connection.
  *   Optional DEBUG_DAMAGE=1 for verbose is_damaged determination logs.
  */
 
-import fs from 'fs/promises';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { upsertAlerts, upsertAlertZipcodes, updateSupersessionChain, closePool, AlertRow } from './db/alertsDb.js';
-// @ts-ignore - JS config file
-import { USED_FILTERS, DAMAGE_EVENT_CONFIG } from './alert-params-config.js';
-// @ts-ignore - JS module
-import { alertToZips } from './alert-to-zips.js';
+import { upsertAlerts, upsertAlertZipcodes, closePool, AlertRow } from './db.js';
+import { USED_FILTERS, DAMAGE_EVENT_CONFIG } from './config.js';
+import { alertToZips } from './utils/alert-to-zips.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Type definitions for alert feature
 interface AlertFeature {
   id: string;
   type: string;
@@ -53,6 +48,9 @@ interface AlertFeature {
     headline?: string;
     description?: string;
     instruction?: string;
+    geocode?: {
+      SAME?: string[];
+    };
     [key: string]: any;
   };
 }
@@ -69,11 +67,10 @@ interface DamageEvaluation {
 
 /**
  * Parse weather_damage_triggers_extended.csv and extract all keywords into a flat list.
- * @returns {Promise<string[]>} Array of normalized keywords (lowercase, trimmed).
  */
 async function loadDamageKeywords(): Promise<string[]> {
   const csvPath = path.join(__dirname, 'weather_damage_triggers_extended.csv');
-  const content = await fs.readFile(csvPath, 'utf8');
+  const content = await fs.promises.readFile(csvPath, 'utf8');
   const lines = content.split('\n').slice(1); // skip header
 
   const keywords = new Set<string>();
@@ -82,14 +79,12 @@ async function loadDamageKeywords(): Promise<string[]> {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
-    // Simple CSV parse: split by comma, extract keywords_to_match (3rd column)
     const parts = line.split(',');
     if (parts.length < 3) continue;
 
-    const keywordCol = parts[2]; // keywords_to_match column
+    const keywordCol = parts[2];
     if (!keywordCol) continue;
 
-    // Split by semicolon and normalize
     const phrases = keywordCol.split(';').map((p) => p.trim().toLowerCase());
     phrases.forEach((p) => {
       if (p) keywords.add(p);
@@ -101,17 +96,6 @@ async function loadDamageKeywords(): Promise<string[]> {
 
 /**
  * Evaluate whether an alert qualifies as damage-relevant.
- *
- * Checks:
- * 1. status = 'actual' (already enforced at fetch time)
- * 2. severity in USED_FILTERS.client.severity
- * 3. certainty in USED_FILTERS.client.certainty
- * 4. event in DAMAGE_EVENT_CONFIG.primaryUsed
- * 5. At least one keyword from damageKeywords matches headline/description/instruction
- *
- * @param feature - The alert feature from NWS GeoJSON.
- * @param damageKeywords - Global list of damage keywords from CSV.
- * @returns {DamageEvaluation} Object with isDamaged flag and reasons array.
  */
 function evaluateDamage(
   feature: AlertFeature,
@@ -125,7 +109,7 @@ function evaluateDamage(
   const certainty = (props.certainty || '').toLowerCase();
   const event = (props.event || '').toLowerCase();
 
-  // Check 1: Status (should already be 'actual' from fetch filter)
+  // Check 1: Status
   if (status !== 'actual') {
     reasons.push(`status=${status} (not actual)`);
     return { isDamaged: false, reasons };
@@ -174,7 +158,6 @@ function evaluateDamage(
   for (const keyword of damageKeywords) {
     if (textToSearch.includes(keyword)) {
       matchedKeywords.push(keyword);
-      // We only need one match, but collect a few for logging
       if (matchedKeywords.length >= 3) break;
     }
   }
@@ -190,9 +173,6 @@ function evaluateDamage(
 
 /**
  * Map an alert feature to an AlertRow for database insertion.
- * @param feature - The alert feature from NWS GeoJSON.
- * @param damageKeywords - Global list of damage keywords.
- * @returns {AlertRow} Typed row object ready for upsert.
  */
 function featureToAlertRow(
   feature: AlertFeature,
@@ -200,10 +180,8 @@ function featureToAlertRow(
 ): AlertRow {
   const props = feature.properties;
 
-  // Evaluate damage relevance
   const damageEval = evaluateDamage(feature, damageKeywords);
 
-  // Parse timestamps (NWS uses ISO 8601 strings)
   const parseDate = (dateStr?: string): Date | null => {
     if (!dateStr) return null;
     try {
@@ -222,9 +200,6 @@ function featureToAlertRow(
     );
   }
 
-  // Extract references (array of previous alert IDs this updates)
-  const references = props.references?.map((ref: any) => ref.identifier || ref['@id']) || [];
-
   const row: AlertRow = {
     id: props.id || feature.id,
     event: props.event || 'Unknown',
@@ -239,14 +214,9 @@ function featureToAlertRow(
     onset: parseDate(props.onset),
     expires: parseDate(props.expires || props.ends),
     is_damaged: damageEval.isDamaged,
-    message_type: props.messageType || null,
-    references: references.length > 0 ? references : null,
-    superseded_by: null, // Will be set by updateSupersessionChain
-    is_superseded: false, // Will be set by updateSupersessionChain
-    raw: feature, // Store full feature as JSONB
+    raw: feature,
   };
 
-  // Log damage determination if flag is set
   if (process.env.DEBUG_DAMAGE && damageEval.isDamaged) {
     console.log(
       `[DAMAGE] ${row.id} | ${row.event} | ${damageEval.reasons.join(', ')}`
@@ -257,26 +227,21 @@ function featureToAlertRow(
 }
 
 /**
- * Main entry point: load alerts, transform to rows, and upsert into database.
+ * Main entry point: ingest alerts from data object, transform to rows, and upsert into database.
  */
-async function main() {
+export async function ingestAlerts(data: AlertData): Promise<void> {
   try {
-    console.log('Loading active alerts from active-alerts.json...');
-    const alertsPath = path.join(__dirname, 'active-alerts.json');
-    const content = await fs.readFile(alertsPath, 'utf8');
-    const data: AlertData = JSON.parse(content);
-
     if (!Array.isArray(data.features)) {
-      throw new Error('active-alerts.json does not contain a valid features array');
+      throw new Error('Data does not contain a valid features array');
     }
 
-    console.log(`Found ${data.features.length} alerts in file.`);
+    console.log(`Processing ${data.features.length} alerts...`);
 
-    console.log('\nLoading damage keywords from weather_damage_triggers_extended.csv...');
+    console.log('Loading damage keywords from weather_damage_triggers_extended.csv...');
     const damageKeywords = await loadDamageKeywords();
     console.log(`Loaded ${damageKeywords.length} unique keywords.`);
 
-    console.log('\nTransforming alerts to AlertRow objects...');
+    console.log('Transforming alerts to AlertRow objects...');
     const rows: AlertRow[] = [];
     for (const feature of data.features) {
       try {
@@ -291,12 +256,12 @@ async function main() {
       }
     }
 
-    console.log(`\nPrepared ${rows.length} rows for upsert.`);
+    console.log(`Prepared ${rows.length} rows for upsert.`);
 
     const damagedCount = rows.filter((r) => r.is_damaged).length;
     console.log(`  Damage-relevant alerts: ${damagedCount}`);
 
-    console.log('\nUpserting alerts into weather_alerts table...');
+    console.log('Upserting alerts into weather_alerts table...');
     await upsertAlerts(rows);
 
     console.log('✓ Successfully upserted all alerts.');
@@ -320,10 +285,9 @@ async function main() {
         const areaDesc = feature.properties.areaDesc || 'Unknown area';
         const sameCodes = feature.properties?.geocode?.SAME || [];
         
-        // Use alertToZips to get affected zipcodes
         const zipResult = alertToZips(feature, {
-          residentialRatioThreshold: 0.01, // Include even minor zip overlaps if they match geometry
-          geometry: feature.geometry, // Use polygon refinement when available
+          residentialRatioThreshold: 0.5,
+          geometry: feature.geometry,
         });
 
         if (zipResult.zips && zipResult.zips.length > 0) {
@@ -392,24 +356,11 @@ async function main() {
       });
     }
 
-    // Update supersession chain to mark old alerts as superseded
-    console.log('\n=== Updating supersession chain ===');
-    await updateSupersessionChain();
-    console.log('✓ Supersession chain updated');
-
-    // Close database pool
     await closePool();
   } catch (error) {
     console.error('\n✗ Error ingesting alerts:');
     console.error(`  ${(error as Error).message}`);
-    process.exit(1);
+    throw error;
   }
 }
-
-// Execute if run directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
-}
-
-export { evaluateDamage, featureToAlertRow, loadDamageKeywords };
 

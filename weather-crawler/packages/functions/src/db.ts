@@ -9,7 +9,7 @@
  * - Provides getZipcodesForAlert and getAlertsForZipcode for querying relationships.
  *
  * Usage:
- *   import { upsertAlerts, upsertAlertZipcodes, AlertRow } from './db/alertsDb.js';
+ *   import { upsertAlerts, upsertAlertZipcodes, AlertRow } from './db.js';
  *   
  *   const rows: AlertRow[] = [...];
  *   await upsertAlerts(rows);
@@ -18,20 +18,10 @@
  *   const zips = await getZipcodesForAlert('alert-123');
  *
  * Environment:
- *   Requires DATABASE_URL in .env file at project root.
+ *   Requires DATABASE_URL in environment variables.
  */
 
 import pg from 'pg';
-import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Load .env from project root (two levels up from db/ directory)
-const envPath = path.resolve(__dirname, '../../.env');
-dotenv.config({ path: envPath });
 
 const { Pool } = pg;
 
@@ -52,10 +42,6 @@ export interface AlertRow {
   onset: Date | null;
   expires: Date | null;
   is_damaged: boolean;
-  message_type: string | null;
-  references: unknown; // JSONB array of referenced alert IDs
-  superseded_by: string | null;
-  is_superseded: boolean;
   raw: unknown; // JSONB field
 }
 
@@ -64,7 +50,6 @@ let pool: pg.Pool | null = null;
 
 /**
  * Get or create the Postgres connection pool.
- * @returns {Pool} The shared pool instance.
  */
 export function getPool(): pg.Pool {
   if (!pool) {
@@ -82,9 +67,6 @@ export function getPool(): pg.Pool {
 /**
  * Execute a function with a database client from the pool.
  * Automatically acquires and releases the client.
- *
- * @param fn - Async function that receives a PoolClient and returns a value.
- * @returns The result of the function.
  */
 export async function withClient<T>(
   fn: (client: pg.PoolClient) => Promise<T>
@@ -100,9 +82,6 @@ export async function withClient<T>(
 /**
  * Upsert a batch of alert rows into the weather_alerts table.
  * Uses INSERT ... ON CONFLICT (id) DO UPDATE to handle both inserts and updates.
- *
- * @param alerts - Array of AlertRow objects to upsert.
- * @returns Promise that resolves when the operation completes.
  */
 export async function upsertAlerts(alerts: AlertRow[]): Promise<void> {
   if (alerts.length === 0) {
@@ -110,7 +89,6 @@ export async function upsertAlerts(alerts: AlertRow[]): Promise<void> {
   }
 
   await withClient(async (client) => {
-    // Build parameterized INSERT ... ON CONFLICT statement
     const columns = [
       'id',
       'event',
@@ -125,10 +103,6 @@ export async function upsertAlerts(alerts: AlertRow[]): Promise<void> {
       'onset',
       'expires',
       'is_damaged',
-      'message_type',
-      '"references"', // Quoted because it's a reserved SQL keyword
-      'superseded_by',
-      'is_superseded',
       'raw',
     ];
 
@@ -154,11 +128,7 @@ export async function upsertAlerts(alerts: AlertRow[]): Promise<void> {
         alert.onset,
         alert.expires,
         alert.is_damaged,
-        alert.message_type,
-        alert.references ? JSON.stringify(alert.references) : null,
-        alert.superseded_by,
-        alert.is_superseded,
-        JSON.stringify(alert.raw) // JSONB expects JSON string in parameterized query
+        JSON.stringify(alert.raw)
       );
     }
 
@@ -181,11 +151,6 @@ export async function upsertAlerts(alerts: AlertRow[]): Promise<void> {
 /**
  * Upsert zipcode mappings for a single alert into weather_alert_zipcodes table.
  * Uses INSERT ... ON CONFLICT to handle idempotent upserts.
- * Does not delete existing rows; only adds/updates the provided zipcodes.
- *
- * @param alertId - The alert ID (from weather_alerts.id).
- * @param zipcodes - Array of 5-digit zipcode strings to associate with this alert.
- * @returns Promise that resolves when the operation completes.
  */
 export async function upsertAlertZipcodes(
   alertId: string,
@@ -196,7 +161,6 @@ export async function upsertAlertZipcodes(
   }
 
   await withClient(async (client) => {
-    // Build parameterized INSERT ... ON CONFLICT statement
     const values: any[] = [];
     const valueStrings: string[] = [];
     let paramIndex = 1;
@@ -218,9 +182,6 @@ export async function upsertAlertZipcodes(
 
 /**
  * Get all zipcodes associated with a specific alert.
- *
- * @param alertId - The alert ID to query.
- * @returns Promise that resolves to an array of zipcode strings.
  */
 export async function getZipcodesForAlert(alertId: string): Promise<string[]> {
   return await withClient(async (client) => {
@@ -237,9 +198,6 @@ export async function getZipcodesForAlert(alertId: string): Promise<string[]> {
 
 /**
  * Get all alert IDs that affect a specific zipcode.
- *
- * @param zipcode - The 5-digit zipcode to query.
- * @returns Promise that resolves to an array of alert IDs.
  */
 export async function getAlertsForZipcode(zipcode: string): Promise<string[]> {
   return await withClient(async (client) => {
@@ -257,8 +215,6 @@ export async function getAlertsForZipcode(zipcode: string): Promise<string[]> {
 /**
  * Get all current alerts (from weather_alerts table) with their IDs.
  * Useful for enrichment scripts that need to process existing alerts.
- *
- * @returns Promise that resolves to an array of objects with id and raw (full GeoJSON feature).
  */
 export async function getAllAlerts(): Promise<Array<{ id: string; raw: any }>> {
   return await withClient(async (client) => {
@@ -272,59 +228,6 @@ export async function getAllAlerts(): Promise<Array<{ id: string; raw: any }>> {
       id: row.id,
       raw: row.raw,
     }));
-  });
-}
-
-/**
- * Update supersession chain for all alerts based on their references.
- * This marks older alerts as superseded when newer alerts reference them.
- * 
- * @returns Promise that resolves when the operation completes.
- */
-export async function updateSupersessionChain(): Promise<void> {
-  await withClient(async (client) => {
-    // First, reset all is_superseded flags
-    await client.query(`
-      UPDATE weather_alerts
-      SET is_superseded = FALSE, superseded_by = NULL
-    `);
-
-    // Find all alerts that have references (these are updates)
-    const query = `
-      SELECT id, "references"
-      FROM weather_alerts
-      WHERE "references" IS NOT NULL AND "references" != 'null'::jsonb
-    `;
-    const result = await client.query(query);
-
-    // For each alert with references, mark the referenced alerts as superseded
-    for (const row of result.rows) {
-      const alertId = row.id;
-      const references = row.references;
-
-      if (Array.isArray(references) && references.length > 0) {
-        // Extract the referenced alert IDs
-        const referencedIds = references
-          .map((ref: any) => {
-            if (typeof ref === 'string') return ref;
-            if (ref && typeof ref === 'object') {
-              return ref.identifier || ref['@id'] || ref.id;
-            }
-            return null;
-          })
-          .filter((id: any) => id !== null);
-
-        if (referencedIds.length > 0) {
-          // Mark the referenced alerts as superseded by this alert
-          const updateQuery = `
-            UPDATE weather_alerts
-            SET is_superseded = TRUE, superseded_by = $1
-            WHERE id = ANY($2)
-          `;
-          await client.query(updateQuery, [alertId, referencedIds]);
-        }
-      }
-    }
   });
 }
 
