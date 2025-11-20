@@ -14,10 +14,12 @@ This Lambda function runs every hour via EventBridge (CloudWatch Events) to:
 
 ## Architecture
 
-- **Framework**: SST (Serverless Stack)
+- **Framework**: SST Ion (Pulumi-based)
 - **Runtime**: Node.js with TypeScript
 - **Trigger**: Cron (hourly via EventBridge)
 - **Database**: Postgres/Supabase
+
+> **Note**: This project was migrated from SST v2 to SST Ion. See `ION_MIGRATION.md` for migration details.
 
 ## Directory Structure
 
@@ -37,8 +39,8 @@ weather-crawler/
 │           └── utils/
 │               └── alert-to-zips.ts   # ZIP code mapping utilities
 ├── stacks/
-│   └── WeatherCrawlerStack.ts        # SST infrastructure
-└── sst.config.ts                      # SST configuration
+│   └── archive/                      # Old SST v2 stacks (archived)
+└── sst.config.ts                      # SST Ion configuration
 ```
 
 ## Prerequisites
@@ -79,15 +81,19 @@ npm run dev
 
 ### Deploy
 
-Deploy to AWS:
+Deploy to AWS (using SST Ion):
 
 ```bash
-# Deploy to staging
-npx sst deploy
+# Deploy to dev stage (default)
+npm run deploy
+# or
+npx sst deploy --stage dev
 
 # Deploy to production
 npx sst deploy --stage production
 ```
+
+> **Important**: The first deployment will generate `.sst/platform/config.d.ts` and resolve TypeScript errors. See `ION_MIGRATION.md` for detailed deployment instructions.
 
 ### Environment Variables
 
@@ -113,7 +119,7 @@ Edit `packages/functions/src/config.ts` to customize:
 
 ### Schedule
 
-Edit `stacks/WeatherCrawlerStack.ts` to change the schedule:
+Edit `sst.config.ts` to change the schedule (in the `run()` function):
 
 ```typescript
 schedule: "rate(1 hour)"  // Run every hour
