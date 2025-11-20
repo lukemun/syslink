@@ -20,13 +20,10 @@
  *   });
  */
 
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const PROCESSED_DIR = path.join(__dirname, '..', 'data', 'processed');
+// Import JSON lookup files directly - they'll be bundled into the Lambda
+import fipsToCountyJson from '../data/processed/fips-to-county.json' assert { type: 'json' };
+import fipsToZipsJson from '../data/processed/fips-to-zips.json' assert { type: 'json' };
+import zipToFipsJson from '../data/processed/zip-to-fips.json' assert { type: 'json' };
 
 interface CountyInfo {
   county: string;
@@ -44,24 +41,17 @@ interface ZipCentroid {
   lon: number;
 }
 
-function readJSON(filename: string, optional = false): any {
-  try {
-    const content = fs.readFileSync(path.join(PROCESSED_DIR, filename), 'utf8');
-    return JSON.parse(content);
-  } catch (error: any) {
-    if (optional && error.code === 'ENOENT') {
-      return null;
-    }
-    throw error;
-  }
-}
-
+// Use imported JSON data directly (bundled with the Lambda)
 const LOOKUPS = {
-  fipsToCounty: readJSON('fips-to-county.json') as Record<string, CountyInfo>,
-  fipsToZips: readJSON('fips-to-zips.json') as Record<string, ZipEntry[]>,
-  zipToFips: readJSON('zip-to-fips.json') as Record<string, any>,
-  zipCentroids: readJSON('zip-centroids.json', true) as Record<string, ZipCentroid> | null,
+  fipsToCounty: fipsToCountyJson as Record<string, CountyInfo>,
+  fipsToZips: fipsToZipsJson as Record<string, ZipEntry[]>,
+  zipToFips: zipToFipsJson as Record<string, any>,
+  zipCentroids: null as Record<string, ZipCentroid> | null, // Optional, not currently used
 };
+
+function getLookups() {
+  return LOOKUPS;
+}
 
 function normalizeFips(input: string | number | null | undefined): string | null {
   if (!input) return null;
@@ -85,7 +75,7 @@ export function getCountyInfo(fipsCode: string): CountyInfo | null {
   if (!normalized) {
     return null;
   }
-  return LOOKUPS.fipsToCounty[normalized] || null;
+  return getLookups().fipsToCounty[normalized] || null;
 }
 
 function pointInPolygon(point: { lat: number; lon: number }, polygon: number[][]): boolean {
@@ -106,8 +96,9 @@ function pointInPolygon(point: { lat: number; lon: number }, polygon: number[][]
 }
 
 function geometryContainsZip(zip: string, geometry: any): boolean {
-  if (!geometry || !LOOKUPS.zipCentroids) return true;
-  const centroid = LOOKUPS.zipCentroids[zip];
+  const zipCentroids = getLookups().zipCentroids;
+  if (!geometry || !zipCentroids) return true;
+  const centroid = zipCentroids[zip];
   if (!centroid) return false;
 
   const polygons =
@@ -170,7 +161,7 @@ export function sameCodesToZips(
     const fips = normalizeFips(code);
     if (!fips) continue;
     const countyInfo = getCountyInfo(fips);
-    const zipEntries = (LOOKUPS.fipsToZips[fips] || []).filter(
+    const zipEntries = (getLookups().fipsToZips[fips] || []).filter(
       entry => entry.residentialRatio >= residentialRatioThreshold
     );
 

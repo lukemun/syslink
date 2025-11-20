@@ -55,6 +55,21 @@ export default $config({
       },
     });
 
+    // --- WEATHER CRAWLER FUNCTION URL ---
+    // Manually triggerable version of the weather crawler
+    const weatherCrawlerFunction = new sst.aws.Function("WeatherCrawlerFunction", {
+      handler: "apps/crawler/src/index.handler",
+      url: true,
+      timeout: "5 minutes",
+      memory: "512 MB",
+      environment: {
+        DATABASE_URL: process.env.DATABASE_URL || "",
+      },
+      nodejs: {
+        install: ["pg"],
+      },
+    });
+
     // --- FUTURE API RESOURCES (not yet implemented) ---
     // To add the API/EventBus from MyStack.ts in the future:
     //
@@ -75,6 +90,7 @@ export default $config({
     // --- OUTPUTS ---
     return {
       crawlerSchedule: weatherCrawler.nodes.job.name,
+      crawlerUrl: weatherCrawlerFunction.url,
     };
   },
 });

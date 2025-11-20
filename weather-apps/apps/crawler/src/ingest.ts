@@ -16,15 +16,10 @@
  *   Optional DEBUG_DAMAGE=1 for verbose is_damaged determination logs.
  */
 
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { upsertAlerts, upsertAlertZipcodes, closePool, AlertRow } from './db.js';
 import { USED_FILTERS, DAMAGE_EVENT_CONFIG } from './config.js';
 import { alertToZips } from './utils/alert-to-zips.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { DAMAGE_KEYWORDS } from './damage-keywords.js';
 
 interface AlertFeature {
   id: string;
@@ -66,32 +61,10 @@ interface DamageEvaluation {
 }
 
 /**
- * Parse weather_damage_triggers_extended.csv and extract all keywords into a flat list.
+ * Get damage keywords (now imported from compiled damage-keywords.ts).
  */
 async function loadDamageKeywords(): Promise<string[]> {
-  const csvPath = path.join(__dirname, 'weather_damage_triggers_extended.csv');
-  const content = await fs.promises.readFile(csvPath, 'utf8');
-  const lines = content.split('\n').slice(1); // skip header
-
-  const keywords = new Set<string>();
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-
-    const parts = line.split(',');
-    if (parts.length < 3) continue;
-
-    const keywordCol = parts[2];
-    if (!keywordCol) continue;
-
-    const phrases = keywordCol.split(';').map((p) => p.trim().toLowerCase());
-    phrases.forEach((p) => {
-      if (p) keywords.add(p);
-    });
-  }
-
-  return Array.from(keywords);
+  return DAMAGE_KEYWORDS;
 }
 
 /**

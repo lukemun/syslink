@@ -5,6 +5,11 @@
 
 declare module "sst" {
   export interface Resource {
+    "WeatherCrawlerFunction": {
+      "name": string
+      "type": "sst.aws.Function"
+      "url": string
+    }
   }
 }
 /// <reference path="sst-env.d.ts" />
