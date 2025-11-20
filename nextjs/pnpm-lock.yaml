@@ -14,6 +14,9 @@ importers:
       '@supabase/supabase-js':
         specifier: ^2.83.0
         version: 2.83.0
+      '@swc/helpers':
+        specifier: ^0.5.15
+        version: 0.5.15
       '@types/pg':
         specifier: ^8.15.6
         version: 8.15.6
