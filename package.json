@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node dealmachine-crawler.js"
+    "start": "node dealmachine-crawler.js",
+    "nextjs:dev": "cd nextjs && npm run dev",
+    "nextjs:build": "cd nextjs && npm run build",
+    "nextjs:start": "cd nextjs && npm start"
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.46",

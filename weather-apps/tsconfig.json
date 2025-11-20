@@ -1,0 +1,15 @@
+{
+  "extends": "@tsconfig/node18/tsconfig.json",
+  "exclude": [
+    "packages",
+    "apps/dashboard",
+    "scripts",
+    "stacks/archive",
+    "stacks/MyStack.ts",
+    "stacks/WeatherCrawlerStack.ts"
+  ],
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "node"
+  }
+}
