@@ -40,3 +40,5 @@ COMMENT ON COLUMN weather_alert_zipcodes.from_city IS
   'TRUE if this ZIP was identified via city name matching from alert text (headline, description, areaDesc). Experimental strategy for high-precision targeting.';
 
 
+
+

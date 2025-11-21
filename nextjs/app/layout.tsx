@@ -41,6 +41,9 @@ export default function RootLayout({
                 <Link href="/alerts" className="px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-700">
                   Active Alerts
                 </Link>
+                <Link href="/leads" className="px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-700">
+                  Leads
+                </Link>
               </div>
             </div>
           </div>

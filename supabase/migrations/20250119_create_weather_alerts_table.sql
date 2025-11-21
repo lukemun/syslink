@@ -85,3 +85,5 @@ COMMENT ON COLUMN weather_alerts.raw IS
   'Full GeoJSON feature object including all properties and geometry';
 
 
+
+
