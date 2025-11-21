@@ -48,6 +48,7 @@ export default $config({
         memory: "512 MB",
         environment: {
           DATABASE_URL: process.env.DATABASE_URL || "",
+          DATABASE_POOLER_URL: process.env.DATABASE_POOLER_URL || "",
         },
         nodejs: {
           install: ["pg"],
@@ -64,6 +65,7 @@ export default $config({
       memory: "512 MB",
       environment: {
         DATABASE_URL: process.env.DATABASE_URL || "",
+        DATABASE_POOLER_URL: process.env.DATABASE_POOLER_URL || "",
       },
       nodejs: {
         install: ["pg"],

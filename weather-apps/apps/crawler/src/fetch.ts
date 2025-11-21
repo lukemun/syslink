@@ -29,7 +29,7 @@ interface AlertData {
  */
 async function fetchJson(endpointPath: string): Promise<any> {
   return new Promise((resolve, reject) => {
-    const options = {
+    const options: https.RequestOptions = {
       hostname: CONFIG.baseUrl,
       path: endpointPath,
       method: 'GET',
@@ -37,6 +37,8 @@ async function fetchJson(endpointPath: string): Promise<any> {
         'User-Agent': CONFIG.userAgent,
         'Accept': 'application/geo+json',
       },
+      // For local testing only - disable SSL verification if NODE_TLS_REJECT_UNAUTHORIZED=0
+      rejectUnauthorized: process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0',
     };
 
     const req = https.request(options, (res) => {

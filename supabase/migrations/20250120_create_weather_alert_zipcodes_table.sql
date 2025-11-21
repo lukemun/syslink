@@ -38,3 +38,4 @@ COMMENT ON COLUMN weather_alert_zipcodes.alert_id IS
 COMMENT ON COLUMN weather_alert_zipcodes.zipcode IS 
   '5-digit US ZIP code affected by the alert, derived from NWS SAME codes and geographic boundary data.';
 
+

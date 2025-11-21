@@ -84,3 +84,4 @@ COMMENT ON COLUMN weather_alerts.is_damaged IS
 COMMENT ON COLUMN weather_alerts.raw IS 
   'Full GeoJSON feature object including all properties and geometry';
 
+

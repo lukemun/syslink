@@ -75,15 +75,35 @@ npm install
 
 ### Local Development
 
-Start the SST dev environment (runs all apps):
+**Test the crawler locally:**
+
+```bash
+cd apps/crawler
+
+# Basic test (dry-run mode, no database writes)
+npm run dev
+
+# Test with ZIP refinement experimental logging
+npm run dev:zip-debug
+
+# Test with all debug flags enabled
+npm run dev:full-debug
+```
+
+Available command-line options:
+- `-d, --dry-run` - Skip database writes (auto-enabled if no DATABASE_URL)
+- `-z, --zip-debug` - Enable ZIP refinement experimental logging
+- `--damage-debug` - Enable verbose damage evaluation logging
+- `--no-ssl-verify` - Disable SSL verification (for local testing)
+- `-h, --help` - Show help message
+
+**Start the SST dev environment:**
 
 ```bash
 npm run dev
 ```
 
-This will start:
-- Weather crawler in dev mode (responds to test events)
-- Alerts dashboard at `http://localhost:3000`
+This will start the Lambda in dev mode (responds to test events).
 
 ### Deploy
 
@@ -107,7 +127,9 @@ Required in parent `.env` file:
 
 **Crawler:**
 - `DATABASE_URL` - Postgres connection string
-- `DEBUG_DAMAGE` (optional) - Set to `1` for verbose damage evaluation logs
+- `DEBUG_DAMAGE` (optional) - Set to `1` for verbose damage evaluation logs (or use `--damage-debug` flag)
+- `ZIP_REFINEMENT_DEBUG` (optional) - Set to `1` to enable experimental ZIP refinement logging (or use `--zip-debug` flag, see `ZIP_REFINEMENT_EXPERIMENT.md`)
+- `DRY_RUN` (optional) - Set to `1` to skip database writes (or use `--dry-run` flag)
 
 **Dashboard** (now in `/nextjs` - see that directory for details):
 - `NEXT_PUBLIC_SUPABASE_URL` - Supabase project URL
@@ -154,8 +176,10 @@ schedule: "cron(0 * * * ? *)"  // Cron expression format
 4. **Enrich with ZIP Codes**:
    - Extracts SAME (FIPS) codes from each alert
    - Maps FIPS codes to ZIP codes using pre-built lookup tables
-   - Optionally filters by residential ratio and polygon geometry
+   - Filters by residential ratio (threshold: 0.5)
+   - Optionally filters by polygon geometry using ZIP centroids
    - Inserts mappings into `weather_alert_zipcodes` table
+   - **Note**: Experimental polygon and city-based filtering strategies are available for logging-only evaluation (see `ZIP_REFINEMENT_EXPERIMENT.md`)
 
 ## Monitoring
 
@@ -186,6 +210,30 @@ The NWS API has usage limits. If you encounter 403 errors:
 - Verify the User-Agent header is set correctly
 - Consider implementing exponential backoff
 
+## ZIP Refinement Experiments
+
+The crawler supports experimental ZIP refinement strategies for improving alert-to-ZIP mapping accuracy:
+
+- **Polygon-based filtering**: Uses ZIP centroids to filter by alert geometry
+- **City-based filtering**: Filters ZIPs by cities mentioned in alert text
+
+These strategies are **logging-only** and do not affect production database writes. Enable experimental logging with:
+
+```bash
+ZIP_REFINEMENT_DEBUG=1 npm run deploy
+```
+
+For detailed documentation, see **[ZIP_REFINEMENT_EXPERIMENT.md](./ZIP_REFINEMENT_EXPERIMENT.md)**.
+
+### Production ZIP Mapping Strategy
+
+Current production behavior persists ZIPs to `weather_alert_zipcodes` based on:
+1. County (FIPS) codes from NWS SAME codes
+2. Residential ratio filtering (threshold: 0.5)
+3. Polygon geometry filtering (when centroids available)
+
+City-based filtering remains experimental until sufficient data is gathered to evaluate its effectiveness.
+
 ## Related Documentation
 
 - `../nextjs/` - **Standalone Next.js alerts dashboard** (extracted from this monorepo)
@@ -194,6 +242,7 @@ The NWS API has usage limits. If you encounter 403 errors:
 - `packages/shared/` - Shared database utilities
 - `../supabase/migrations/` - Database schema migrations
 - `../.env` - Root environment variables (AWS credentials, DATABASE_URL)
+- `ZIP_REFINEMENT_EXPERIMENT.md` - **Experimental ZIP refinement strategies documentation**
 
 ## License
 

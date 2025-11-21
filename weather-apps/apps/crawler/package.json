@@ -4,7 +4,11 @@
   "type": "module",
   "scripts": {
     "test": "sst bind vitest",
-    "typecheck": "tsc -noEmit"
+    "typecheck": "tsc -noEmit",
+    "build-zip-lookups": "node --loader ts-node/esm scripts/build-zip-lookups.ts",
+    "dev": "node --loader ts-node/esm src/index.ts --dry-run --no-ssl-verify",
+    "dev:zip-debug": "node --loader ts-node/esm src/index.ts --dry-run --zip-debug --no-ssl-verify",
+    "dev:full-debug": "node --loader ts-node/esm src/index.ts --dry-run --zip-debug --damage-debug --no-ssl-verify"
   },
   "dependencies": {
     "pg": "^8.13.1"

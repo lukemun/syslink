@@ -16,10 +16,31 @@
  *   Optional DEBUG_DAMAGE=1 for verbose is_damaged determination logs.
  */
 
-import { upsertAlerts, upsertAlertZipcodes, closePool, AlertRow } from './db.js';
+import { upsertAlerts, upsertAlertZipcodes, closePool, AlertRow, ZipcodeWithFlags } from './db.js';
 import { USED_FILTERS, DAMAGE_EVENT_CONFIG } from './config.js';
-import { alertToZips } from './utils/alert-to-zips.js';
+import { alertToZips, sameCodesToZips } from './utils/alert-to-zips.js';
 import { DAMAGE_KEYWORDS } from './damage-keywords.js';
+import {
+  extractCitiesFromDescription,
+  filterZipsByCities,
+  computeZipSetStats,
+  logZipRefinement,
+} from './utils/zip-refinement.js';
+
+/**
+ * Check if experimental ZIP refinement debug logging is enabled.
+ * Logging only, does not affect production behavior.
+ */
+function isZipRefinementDebug(): boolean {
+  return process.env.ZIP_REFINEMENT_DEBUG === '1';
+}
+
+/**
+ * Check if dry-run mode is enabled (for local testing without database).
+ */
+function isDryRun(): boolean {
+  return process.env.DRY_RUN === '1';
+}
 
 interface AlertFeature {
   id: string;
@@ -58,6 +79,7 @@ interface AlertData {
 interface DamageEvaluation {
   isDamaged: boolean;
   reasons: string[];
+  matchedKeywords?: string[];
 }
 
 /**
@@ -131,7 +153,7 @@ function evaluateDamage(
   for (const keyword of damageKeywords) {
     if (textToSearch.includes(keyword)) {
       matchedKeywords.push(keyword);
-      if (matchedKeywords.length >= 3) break;
+      if (matchedKeywords.length >= 5) break; // Collect up to 5 keywords for logging
     }
   }
 
@@ -140,8 +162,13 @@ function evaluateDamage(
     return { isDamaged: false, reasons };
   }
 
-  reasons.push(`keyword: "${matchedKeywords[0]}" ✓`);
-  return { isDamaged: true, reasons };
+  // Add all matched keywords to reasons
+  const keywordSummary = matchedKeywords.length <= 3
+    ? matchedKeywords.map(k => `"${k}"`).join(', ')
+    : `${matchedKeywords.slice(0, 3).map(k => `"${k}"`).join(', ')} (+${matchedKeywords.length - 3} more)`;
+  
+  reasons.push(`keywords: ${keywordSummary} ✓`);
+  return { isDamaged: true, reasons, matchedKeywords };
 }
 
 /**
@@ -190,9 +217,13 @@ function featureToAlertRow(
     raw: feature,
   };
 
-  if (process.env.DEBUG_DAMAGE && damageEval.isDamaged) {
+  if (process.env.DEBUG_DAMAGE) {
+    const prefix = damageEval.isDamaged ? '[DAMAGE]' : '[NO-DAMAGE]';
+    const keywords = damageEval.matchedKeywords 
+      ? ` | Matched keywords: ${damageEval.matchedKeywords.join(', ')}`
+      : '';
     console.log(
-      `[DAMAGE] ${row.id} | ${row.event} | ${damageEval.reasons.join(', ')}`
+      `${prefix} ${row.event} | ${damageEval.reasons.join(', ')}${keywords}`
     );
   }
 
@@ -216,10 +247,14 @@ export async function ingestAlerts(data: AlertData): Promise<void> {
 
     console.log('Transforming alerts to AlertRow objects...');
     const rows: AlertRow[] = [];
+    const damageEvaluations = new Map<string, DamageEvaluation>();
+    
     for (const feature of data.features) {
       try {
+        const damageEval = evaluateDamage(feature, damageKeywords);
         const row = featureToAlertRow(feature, damageKeywords);
         rows.push(row);
+        damageEvaluations.set(row.id, damageEval);
       } catch (err) {
         console.error(
           `Warning: Failed to transform alert ${feature.id || 'unknown'}: ${
@@ -231,18 +266,37 @@ export async function ingestAlerts(data: AlertData): Promise<void> {
 
     console.log(`Prepared ${rows.length} rows for upsert.`);
 
-    const damagedCount = rows.filter((r) => r.is_damaged).length;
+    const damagedRows = rows.filter((r) => r.is_damaged);
+    const damagedCount = damagedRows.length;
     console.log(`  Damage-relevant alerts: ${damagedCount}`);
+    
+    // Show summary of damage-relevant alerts with matched keywords
+    if (damagedCount > 0) {
+      console.log('\n  Damage-relevant alerts summary:');
+      for (const row of damagedRows) {
+        const evaluation = damageEvaluations.get(row.id);
+        const keywords = evaluation?.matchedKeywords 
+          ? evaluation.matchedKeywords.slice(0, 3).join(', ')
+          : 'unknown';
+        console.log(`    • ${row.event} (${row.area_desc?.substring(0, 40) || 'N/A'}) - Keywords: ${keywords}`);
+      }
+    }
 
-    console.log('Upserting alerts into weather_alerts table...');
-    await upsertAlerts(rows);
-
-    console.log('✓ Successfully upserted all alerts.');
+    if (isDryRun()) {
+      console.log('\n[DRY-RUN] Skipping database upsert for weather_alerts table...');
+      console.log('✓ Would have upserted', rows.length, 'alerts.');
+    } else {
+      console.log('Upserting alerts into weather_alerts table...');
+      await upsertAlerts(rows);
+      console.log('✓ Successfully upserted all alerts.');
+    }
 
     console.log('\n=== Enriching alerts with zipcode mappings ===');
     let enrichedCount = 0;
     let totalZipcodes = 0;
     let failedCount = 0;
+    let totalBaselineZips = 0; // Total ZIPs before refinement (county-only)
+    let totalRefinedZips = 0;   // Total ZIPs after refinement
     const failureReasons: Array<{
       alertId: string;
       event: string;
@@ -258,21 +312,121 @@ export async function ingestAlerts(data: AlertData): Promise<void> {
         const areaDesc = feature.properties.areaDesc || 'Unknown area';
         const sameCodes = feature.properties?.geocode?.SAME || [];
         
+        // Get county-based ZIPs without geometry filtering (baseline)
+        const allCountyZips = sameCodesToZips(sameCodes, {
+          residentialRatioThreshold: 0.5,
+          geometry: undefined, // No geometry filtering for baseline
+        }).zips;
+        
+        // Get polygon-filtered ZIPs (using geometry + centroids)
         const zipResult = alertToZips(feature, {
           residentialRatioThreshold: 0.5,
           geometry: feature.geometry,
         });
 
-        if (zipResult.zips && zipResult.zips.length > 0) {
-          await upsertAlertZipcodes(alertId, zipResult.zips);
+        // Extract cities from alert text and compute city-filtered ZIPs
+        const description = feature.properties.description || '';
+        const headline = feature.properties.headline || '';
+        const fullText = `${headline} ${description} ${areaDesc}`;
+        const parsedCities = extractCitiesFromDescription(fullText);
+        
+        // Get state from first county if available
+        const alertState = zipResult.counties.length > 0 && zipResult.counties[0].state 
+          ? zipResult.counties[0].state 
+          : undefined;
+        
+        // Compute city-filtered ZIPs
+        const cityZips = filterZipsByCities(allCountyZips, parsedCities, alertState);
+
+        // Build combined ZIP map with provenance flags
+        const zipFlags = new Map<string, { fromCounty: boolean; fromPolygon: boolean; fromCity: boolean }>();
+        
+        // Mark all county-based ZIPs
+        for (const zip of allCountyZips) {
+          zipFlags.set(zip, { fromCounty: true, fromPolygon: false, fromCity: false });
+        }
+        
+        // Mark polygon-filtered ZIPs
+        for (const zip of zipResult.zips) {
+          const existing = zipFlags.get(zip) || { fromCounty: false, fromPolygon: false, fromCity: false };
+          zipFlags.set(zip, { ...existing, fromPolygon: true });
+        }
+        
+        // Mark city-filtered ZIPs
+        for (const zip of cityZips) {
+          const existing = zipFlags.get(zip) || { fromCounty: false, fromPolygon: false, fromCity: false };
+          zipFlags.set(zip, { ...existing, fromCity: true });
+        }
+        
+        // Convert map to array of ZipcodeWithFlags
+        const zipcodesWithFlags: ZipcodeWithFlags[] = Array.from(zipFlags.entries()).map(
+          ([zipcode, flags]) => ({
+            zipcode,
+            fromCounty: flags.fromCounty,
+            fromPolygon: flags.fromPolygon,
+            fromCity: flags.fromCity,
+          })
+        );
+
+        // Persist all ZIPs with their provenance flags
+        if (zipcodesWithFlags.length > 0) {
+          if (!isDryRun()) {
+            await upsertAlertZipcodes(alertId, zipcodesWithFlags);
+          }
           enrichedCount++;
-          totalZipcodes += zipResult.zips.length;
+          totalZipcodes += zipcodesWithFlags.length;
+          
+          // Count ZIPs by strategy
+          const countyCount = zipcodesWithFlags.filter(z => z.fromCounty).length;
+          const polygonCount = zipcodesWithFlags.filter(z => z.fromPolygon).length;
+          const cityCount = zipcodesWithFlags.filter(z => z.fromCity).length;
+          const intersectionCount = zipcodesWithFlags.filter(z => z.fromPolygon && z.fromCity).length;
+          
+          // Track baseline vs refined totals
+          totalBaselineZips += countyCount;
+          totalRefinedZips += polygonCount; // Using polygon as the refined set
           
           console.log(`✓ [${enrichedCount}] ${event}`);
           console.log(`  Alert ID: ${alertId.substring(0, 60)}...`);
           console.log(`  SAME codes: [${sameCodes.join(', ')}]`);
-          console.log(`  Mapped to: ${zipResult.zips.length} zipcode(s)`);
-          console.log(`  Sample ZIPs: ${zipResult.zips.slice(0, 5).join(', ')}${zipResult.zips.length > 5 ? '...' : ''}`);
+          console.log(`  Total unique ZIPs: ${zipcodesWithFlags.length}`);
+          
+          console.log(`  Strategy breakdown:`);
+          console.log(`    County (baseline): ${countyCount} ZIPs`);
+          console.log(`    Polygon-filtered: ${polygonCount} ZIPs (${countyCount > 0 ? Math.round((polygonCount / countyCount) * 100) : 0}% of baseline)`);
+          if (parsedCities.size > 0) {
+            console.log(`    City-filtered: ${cityCount} ZIPs (${countyCount > 0 ? Math.round((cityCount / countyCount) * 100) : 0}% of baseline)`);
+            console.log(`    Polygon ∩ City: ${intersectionCount} ZIPs (high-confidence core)`);
+            console.log(`    Cities detected: ${Array.from(parsedCities).join(', ')}`);
+          }
+          
+          // Sample ZIPs from polygon set (typically the production default)
+          const polygonZips = zipcodesWithFlags.filter(z => z.fromPolygon).map(z => z.zipcode);
+          console.log(`  Sample polygon ZIPs: ${polygonZips.slice(0, 5).join(', ')}${polygonZips.length > 5 ? '...' : ''}`);
+
+          
+          // Detailed comparison for ZIP refinement debug mode
+          if (isZipRefinementDebug()) {
+            // Compute statistics
+            const polygonZips = zipcodesWithFlags.filter(z => z.fromPolygon).map(z => z.zipcode);
+            const cityZips = zipcodesWithFlags.filter(z => z.fromCity).map(z => z.zipcode);
+            const stats = computeZipSetStats(
+              allCountyZips,
+              polygonZips,
+              cityZips
+            );
+            
+            // Log detailed experimental results
+            logZipRefinement(
+              alertId,
+              event,
+              stats,
+              allCountyZips,
+              polygonZips,
+              cityZips,
+              parsedCities
+            );
+          }
         } else {
           failedCount++;
           let reason = 'Unknown';
@@ -312,11 +466,31 @@ export async function ingestAlerts(data: AlertData): Promise<void> {
       }
     }
 
-    console.log('=== Enrichment Summary ===');
-    console.log(`✓ Successfully enriched: ${enrichedCount} alerts`);
-    console.log(`  Total zipcode mappings: ${totalZipcodes}`);
-    console.log(`  Average per alert: ${enrichedCount > 0 ? Math.round((totalZipcodes / enrichedCount) * 10) / 10 : 0} zipcodes`);
-    console.log(`✗ Skipped/Failed: ${failedCount} alerts`);
+    console.log('\n╔════════════════════════════════════════════════════════════════╗');
+    console.log('║                    PROCESSING SUMMARY                          ║');
+    console.log('╚════════════════════════════════════════════════════════════════╝');
+    if (isDryRun()) {
+      console.log('⚠️  [DRY-RUN MODE] Database writes skipped\n');
+    }
+    console.log('📊 Alert Statistics:');
+    console.log(`   • Total alerts fetched: ${data.features.length}`);
+    console.log(`   • Alerts transformed: ${rows.length}`);
+    console.log(`   • Damage-relevant: ${damagedCount} (${rows.length > 0 ? Math.round((damagedCount / rows.length) * 100) : 0}%)`);
+    console.log(`   • ZIP-enriched: ${enrichedCount}`);
+    console.log(`   • Skipped/Failed: ${failedCount}`);
+    
+    console.log('\n📍 ZIP Code Refinement:');
+    console.log(`   • Baseline (county-only): ${totalBaselineZips} ZIPs`);
+    console.log(`   • After polygon refinement: ${totalRefinedZips} ZIPs`);
+    const reductionPct = totalBaselineZips > 0 
+      ? Math.round(((totalBaselineZips - totalRefinedZips) / totalBaselineZips) * 100) 
+      : 0;
+    console.log(`   • Reduction: ${reductionPct}% (${totalBaselineZips - totalRefinedZips} ZIPs removed)`);
+    console.log(`   • Total unique mappings: ${totalZipcodes} (includes all strategies)`);
+    console.log(`   • Average per alert: ${enrichedCount > 0 ? Math.round((totalZipcodes / enrichedCount) * 10) / 10 : 0} ZIPs`);
+    
+    console.log('\n📝 Note: Each ZIP includes provenance flags (from_county, from_polygon, from_city)');
+    console.log('════════════════════════════════════════════════════════════════\n');
     
     if (failureReasons.length > 0) {
       console.log('\n=== Failure Details ===');
@@ -329,7 +503,9 @@ export async function ingestAlerts(data: AlertData): Promise<void> {
       });
     }
 
-    await closePool();
+    if (!isDryRun()) {
+      await closePool();
+    }
   } catch (error) {
     console.error('\n✗ Error ingesting alerts:');
     console.error(`  ${(error as Error).message}`);
