@@ -11,7 +11,6 @@ import { createClient } from '@/utils/supabase/server';
 import { getActiveAlertsWithHistory } from '@/shared/alertsDb';
 import { scoreLead } from '@/shared/leadScoring';
 import type { EnrichedAlert } from '@/shared/alertsDb';
-import type { LeadScoringOutput } from '@/shared/leadScoring';
 import ExpandableLeadRow, { type LeadScoreData } from '@/components/ExpandableLeadRow';
 import LocalTime from '@/components/LocalTime';
 
