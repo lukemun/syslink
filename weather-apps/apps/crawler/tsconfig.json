@@ -3,6 +3,7 @@
   "compilerOptions": {
     "module": "esnext",
     "moduleResolution": "node",
+    "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
       "@weather-crawler/core/*": ["../core/src/*"]

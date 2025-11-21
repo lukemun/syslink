@@ -7,6 +7,7 @@
  *   GET /api/alerts
  *   GET /api/alerts?is_damaged=true
  *   GET /api/alerts?limit=50
+ *   GET /api/alerts?is_damaged=true&since=2024-01-01T00:00:00Z
  */
 
 import { NextResponse } from 'next/server';
@@ -19,10 +20,12 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const isDamagedParam = searchParams.get('is_damaged');
     const limitParam = searchParams.get('limit');
+    const sinceParam = searchParams.get('since');
 
     const options: {
       is_damaged?: boolean;
       limit?: number;
+      since?: Date;
     } = {};
 
     if (isDamagedParam !== null) {
@@ -33,6 +36,13 @@ export async function GET(request: Request) {
       const limit = parseInt(limitParam, 10);
       if (!isNaN(limit) && limit > 0) {
         options.limit = Math.min(limit, 500); // Cap at 500
+      }
+    }
+
+    if (sinceParam !== null) {
+      const sinceDate = new Date(sinceParam);
+      if (!isNaN(sinceDate.getTime())) {
+        options.since = sinceDate;
       }
     }
 

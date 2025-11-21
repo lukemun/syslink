@@ -50,16 +50,51 @@ let pool: pg.Pool | null = null;
 
 /**
  * Get or create the Postgres connection pool.
+ * Configured for serverless environments with minimal connections and proper timeouts.
+ * 
+ * For best results with Supabase, use the connection pooler URL:
+ * - Port 6543 = Transaction mode (requires ?pgbouncer=true)
+ * - Port 5432 on pooler = Session mode
  */
 export function getPool(): pg.Pool {
   if (!pool) {
-    const connectionString = process.env.DATABASE_URL;
+    // Prefer pooler URL for serverless, fall back to direct connection
+    let connectionString = process.env.DATABASE_POOLER_URL || process.env.DATABASE_URL;
     if (!connectionString) {
       throw new Error(
-        'DATABASE_URL environment variable is required for database connection'
+        'DATABASE_URL or DATABASE_POOLER_URL environment variable is required for database connection'
       );
     }
-    pool = new Pool({ connectionString });
+
+    // Log which connection we're using (helpful for debugging)
+    const isPooler = connectionString.includes('pooler.supabase.com');
+    console.log(`Using ${isPooler ? 'POOLER' : 'DIRECT'} connection`);
+    
+    // If using port 6543 (Transaction mode), ensure pgbouncer=true parameter is set
+    if (connectionString.includes(':6543/')) {
+      const url = new URL(connectionString.replace('postgresql://', 'http://'));
+      if (!url.searchParams.has('pgbouncer')) {
+        connectionString += (connectionString.includes('?') ? '&' : '?') + 'pgbouncer=true';
+        console.log('Added pgbouncer=true parameter for Transaction mode');
+      }
+    }
+
+    pool = new Pool({
+      connectionString,
+      // Serverless-optimized settings
+      max: 1, // Use only 1 connection per Lambda instance
+      idleTimeoutMillis: 5000, // Close idle connections after 5 seconds
+      connectionTimeoutMillis: 20000, // Increased to 20 seconds for pooler connection
+      // Query timeouts
+      statement_timeout: 30000, // 30 second query timeout
+      query_timeout: 30000, // 30 second query timeout
+      // Allow graceful closure
+      allowExitOnIdle: true,
+      // SSL configuration - required for Supabase connections
+      ssl: {
+        rejectUnauthorized: false, // Accept self-signed certs in Lambda environment
+      },
+    });
   }
   return pool;
 }
@@ -88,7 +123,13 @@ export async function upsertAlerts(alerts: AlertRow[]): Promise<void> {
     return;
   }
 
+  console.log(`Upserting ${alerts.length} alerts to database...`);
+  const startTime = Date.now();
+
   await withClient(async (client) => {
+    // Set statement timeout for this connection
+    await client.query('SET statement_timeout = 30000'); // 30 seconds
+    
     const columns = [
       'id',
       'event',
@@ -144,36 +185,61 @@ export async function upsertAlerts(alerts: AlertRow[]): Promise<void> {
       SET ${updateSet}
     `;
 
+    console.log(`Executing upsert query (${values.length} parameters)...`);
     await client.query(query, values);
+    
+    const duration = Date.now() - startTime;
+    console.log(`✓ Upsert completed in ${duration}ms`);
   });
 }
 
 /**
+ * ZIP with provenance flags indicating which filtering strategy identified it.
+ */
+export interface ZipcodeWithFlags {
+  zipcode: string;
+  fromCounty: boolean;
+  fromPolygon: boolean;
+  fromCity: boolean;
+}
+
+/**
  * Upsert zipcode mappings for a single alert into weather_alert_zipcodes table.
+ * Accepts ZIPs with provenance flags to track which filtering strategies identified each ZIP.
  * Uses INSERT ... ON CONFLICT to handle idempotent upserts.
  */
 export async function upsertAlertZipcodes(
   alertId: string,
-  zipcodes: string[]
+  zipcodes: ZipcodeWithFlags[]
 ): Promise<void> {
   if (zipcodes.length === 0) {
     return;
   }
 
   await withClient(async (client) => {
+    // Set statement timeout for this connection
+    await client.query('SET statement_timeout = 30000'); // 30 seconds
+    
     const values: any[] = [];
     const valueStrings: string[] = [];
     let paramIndex = 1;
 
-    for (const zipcode of zipcodes) {
-      valueStrings.push(`($${paramIndex++}, $${paramIndex++})`);
-      values.push(alertId, zipcode);
+    for (const zip of zipcodes) {
+      valueStrings.push(
+        `($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`
+      );
+      values.push(alertId, zip.zipcode, zip.fromCounty, zip.fromPolygon, zip.fromCity);
     }
 
     const query = `
-      INSERT INTO weather_alert_zipcodes (alert_id, zipcode)
+      INSERT INTO weather_alert_zipcodes (alert_id, zipcode, from_county, from_polygon, from_city)
       VALUES ${valueStrings.join(', ')}
-      ON CONFLICT (alert_id, zipcode) DO NOTHING
+      ON CONFLICT (alert_id, zipcode) DO UPDATE
+      SET 
+        from_county = EXCLUDED.from_county,
+        from_polygon = EXCLUDED.from_polygon,
+        from_city = EXCLUDED.from_city,
+        created_at = LEAST(weather_alert_zipcodes.created_at, EXCLUDED.created_at)
     `;
 
     await client.query(query, values);

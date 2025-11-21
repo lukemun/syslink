@@ -1,10 +1,12 @@
 /**
- * Active Alerts Dashboard Page
+ * Damage Alerts Dashboard Page
  * 
- * Purpose: Displays active weather alerts sorted by earliest time first,
- * with enriched zip code data and severity/disaster type information.
+ * Purpose: Displays weather alerts from the last 7 days that have been flagged
+ * as damage-qualified (is_damaged = true), with enriched zip code data and 
+ * severity/disaster type information.
  * 
- * This is a Server Component that directly queries the database.
+ * This is a Server Component that directly queries the database with damage
+ * and time-window filters applied.
  */
 
 import { createClient } from '@/utils/supabase/server';
@@ -14,39 +16,44 @@ import ExpandableAlertRow from '@/components/ExpandableAlertRow';
 import LocalTime from '@/components/LocalTime';
 
 /**
- * Note: AlertRow component has been replaced with ExpandableAlertRow
- * which is imported from components/ExpandableAlertRow.tsx
+ * Calculate the date 7 days ago from now
  */
+function getSevenDaysAgo(): Date {
+  const date = new Date();
+  date.setDate(date.getDate() - 7);
+  return date;
+}
 
 /**
- * Main Page Component
+ * Main Damage Alerts Page Component
  */
-export default async function AlertsPage() {
+export default async function DamageAlertsPage() {
   const supabase = await createClient();
   
   let alerts: EnrichedAlert[] = [];
   let error: string | null = null;
 
   try {
+    const sevenDaysAgo = getSevenDaysAgo();
+    
     alerts = await getActiveAlertsWithHistory(supabase, { 
       limit: 100,
-      includeMarine: false // Filter out marine alerts with no zip codes
+      includeMarine: false, // Filter out marine alerts with no zip codes
+      is_damaged: true, // Only show alerts flagged as damage-qualified
+      since: sevenDaysAgo, // Only alerts from last 7 days
     });
     
-    // Log description status for debugging
-    console.log('[Alerts Page] Loaded alerts:', {
+    // Log for debugging
+    console.log('[Damage Alerts Page] Loaded alerts:', {
       count: alerts.length,
+      sevenDaysAgo: sevenDaysAgo.toISOString(),
       firstAlertId: alerts[0]?.id?.substring(0, 40),
       firstAlertEvent: alerts[0]?.event,
-      firstAlertHasDescription: !!alerts[0]?.description,
-      firstAlertDescriptionLength: alerts[0]?.description?.length || 0,
-      firstAlertDescriptionPreview: alerts[0]?.description?.substring(0, 100),
-      alertsWithDescriptions: alerts.filter(a => a.description).length,
-      alertsWithoutDescriptions: alerts.filter(a => !a.description).length,
+      firstAlertDamaged: alerts[0]?.is_damaged,
     });
   } catch (err) {
-    console.error('Error loading alerts:', err);
-    error = err instanceof Error ? err.message : 'Failed to load alerts';
+    console.error('Error loading damage alerts:', err);
+    error = err instanceof Error ? err.message : 'Failed to load damage alerts';
   }
 
   return (
@@ -56,9 +63,11 @@ export default async function AlertsPage() {
         <div className="mb-8">
           <div className="flex items-start justify-between">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900">Active Weather Alerts</h1>
+              <h1 className="text-3xl font-bold text-gray-900">Damage Alerts (Last 7 Days)</h1>
               <p className="mt-2 text-sm text-gray-600">
-                Sorted by earliest start time. Showing alerts with status &ldquo;Actual&rdquo; from the National Weather Service.
+                Showing alerts with potential property damage from the last 7 days. 
+                These alerts meet damage-relevance criteria including extreme/severe severity, 
+                observed/likely certainty, and damage-capable event types.
               </p>
             </div>
             <div className="text-right">
@@ -70,10 +79,10 @@ export default async function AlertsPage() {
           </div>
           <div className="mt-4 flex items-center gap-4">
             <div className="text-sm text-gray-700">
-              <span className="font-medium">Total Alerts:</span> {alerts.length}
+              <span className="font-medium">Total Damage Alerts:</span> {alerts.length}
             </div>
             <div className="text-sm text-gray-700">
-              <span className="font-medium">Damage Risk:</span> {alerts.filter(a => a.is_damaged).length}
+              <span className="font-medium">Date Range:</span> Last 7 days
             </div>
           </div>
         </div>
@@ -81,7 +90,7 @@ export default async function AlertsPage() {
         {/* Error State */}
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded mb-6">
-            <p className="font-medium">Error loading alerts</p>
+            <p className="font-medium">Error loading damage alerts</p>
             <p className="text-sm mt-1">{error}</p>
           </div>
         )}
@@ -89,8 +98,10 @@ export default async function AlertsPage() {
         {/* Empty State */}
         {!error && alerts.length === 0 && (
           <div className="bg-green-50 border border-green-200 text-green-800 px-4 py-3 rounded">
-            <p className="font-medium">No active alerts</p>
-            <p className="text-sm mt-1">There are currently no active weather alerts in the database.</p>
+            <p className="font-medium">No damage alerts in the last 7 days</p>
+            <p className="text-sm mt-1">
+              There are currently no active weather alerts meeting damage criteria from the past week.
+            </p>
           </div>
         )}
 
@@ -132,6 +143,7 @@ export default async function AlertsPage() {
         <div className="mt-6 text-sm text-gray-500">
           <p>
             Data refreshed from the National Weather Service. Times displayed in your local timezone.
+            Alerts are filtered to show only those with damage risk from the last 7 days.
           </p>
         </div>
       </div>

@@ -133,3 +133,4 @@ npm run remove
 - All existing environment variables still work
 - SST Ion handles Next.js deployment automatically using CloudFront + Lambda@Edge
 
+

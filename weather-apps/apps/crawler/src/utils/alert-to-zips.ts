@@ -7,7 +7,12 @@
  *  - data/processed/zip-to-fips.json
  *
  * Optional refinement data:
- *  - data/processed/zip-centroids.json (if available, used for polygon filtering)
+ *  - data/processed/zip-centroids.json (population-weighted centroids, used for polygon filtering)
+ *
+ * Note on centroids: The lat/lon coordinates are population-weighted, not pure geographic centers.
+ * This means centroids represent where people actually live, which is ideal for weather alerts.
+ * For example, in a ZIP that's 80% farmland and 20% town, the centroid will be near the town,
+ * not in the middle of the farmland.
  *
  * Usage:
  *   import { sameCodesToZips, alertToZips } from './utils/alert-to-zips.js';
@@ -21,9 +26,10 @@
  */
 
 // Import JSON lookup files directly - they'll be bundled into the Lambda
-import fipsToCountyJson from '../data/processed/fips-to-county.json' assert { type: 'json' };
-import fipsToZipsJson from '../data/processed/fips-to-zips.json' assert { type: 'json' };
-import zipToFipsJson from '../data/processed/zip-to-fips.json' assert { type: 'json' };
+import fipsToCountyJson from '../data/processed/fips-to-county.json' with { type: 'json' };
+import fipsToZipsJson from '../data/processed/fips-to-zips.json' with { type: 'json' };
+import zipToFipsJson from '../data/processed/zip-to-fips.json' with { type: 'json' };
+import zipCentroidsJson from '../data/processed/zip-centroids.json' with { type: 'json' };
 
 interface CountyInfo {
   county: string;
@@ -37,8 +43,8 @@ interface ZipEntry {
 }
 
 interface ZipCentroid {
-  lat: number;
-  lon: number;
+  lat: number;  // Population-weighted latitude (not pure geographic center)
+  lon: number;  // Population-weighted longitude (not pure geographic center)
 }
 
 // Use imported JSON data directly (bundled with the Lambda)
@@ -46,7 +52,7 @@ const LOOKUPS = {
   fipsToCounty: fipsToCountyJson as Record<string, CountyInfo>,
   fipsToZips: fipsToZipsJson as Record<string, ZipEntry[]>,
   zipToFips: zipToFipsJson as Record<string, any>,
-  zipCentroids: null as Record<string, ZipCentroid> | null, // Optional, not currently used
+  zipCentroids: zipCentroidsJson as Record<string, ZipCentroid>, // Now populated from zip-centroids.json
 };
 
 function getLookups() {
@@ -95,6 +101,20 @@ function pointInPolygon(point: { lat: number; lon: number }, polygon: number[][]
   return inside;
 }
 
+/**
+ * Check if a ZIP's centroid falls within the alert's polygon geometry.
+ * 
+ * Important: Centroids are population-weighted (not pure geographic centers).
+ * This means the centroid represents where people actually live within the ZIP,
+ * which is better for weather alerts than a pure geometric center that might
+ * be in an uninhabited area.
+ * 
+ * Note: Polygon-based filtering is currently used only in experimental/logging paths
+ * (guarded by ZIP_REFINEMENT_DEBUG) and does not yet affect persisted ZIP mappings.
+ * 
+ * Returns true if no geometry or centroids available (pass-through).
+ * Returns false if ZIP has no centroid entry (exclude from polygon filtering).
+ */
 function geometryContainsZip(zip: string, geometry: any): boolean {
   const zipCentroids = getLookups().zipCentroids;
   if (!geometry || !zipCentroids) return true;
