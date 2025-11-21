@@ -53,6 +53,7 @@ export default function AlertsLayout({
   // Determine which tab is active based on current path
   const isAllAlertsActive = pathname === '/alerts';
   const isDamageAlertsActive = pathname === '/alerts/damage';
+  const isLeadsActive = pathname === '/alerts/leads';
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -69,6 +70,11 @@ export default function AlertsLayout({
               href="/alerts/damage" 
               label="Damage (Last 7 Days)" 
               isActive={isDamageAlertsActive}
+            />
+            <TabLink 
+              href="/alerts/leads" 
+              label="Leads" 
+              isActive={isLeadsActive}
             />
           </div>
         </div>

@@ -131,3 +131,5 @@ FROM weather_alert_zipcodes
 WHERE from_polygon = TRUE AND from_city = TRUE
 LIMIT 100;
 
+
+
