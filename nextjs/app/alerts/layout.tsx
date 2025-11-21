@@ -1,10 +1,9 @@
 /**
  * Alerts Layout with Tab Navigation
  * 
- * Purpose: Provides a shared layout for all alerts pages with a tab bar
- * at the top to switch between "All Alerts" and "Damage (Last 7 Days)".
+ * Purpose: Provides the main layout for the dashboard with tab navigation
  * 
- * Usage: Wraps all pages under /alerts/* route including /alerts and /alerts/damage
+ * Usage: Wraps all pages under /alerts/* route including /alerts, /alerts/damage, and /alerts/leads
  */
 
 'use client';
@@ -28,7 +27,7 @@ function TabLink({
     <Link
       href={href}
       className={`
-        px-4 py-2 text-sm font-medium rounded-t-lg transition-colors
+        px-6 py-3 text-sm font-medium rounded-t-lg transition-colors
         ${isActive 
           ? 'bg-white text-gray-900 border-t-2 border-x-2 border-gray-200 border-b-0' 
           : 'bg-gray-100 text-gray-600 hover:bg-gray-200 hover:text-gray-900 border-b-2 border-gray-200'
@@ -57,6 +56,16 @@ export default function AlertsLayout({
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* Header with Title and Tab Navigation */}
+      <div className="bg-gray-900 text-white shadow-lg">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="py-6">
+            <h1 className="text-2xl font-bold">Weather Alerts Dashboard</h1>
+            <p className="text-sm text-gray-300 mt-1">Real-time weather alerts with lead scoring</p>
+          </div>
+        </div>
+      </div>
+      
       {/* Tab Navigation Bar */}
       <div className="bg-gray-100 border-b-2 border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
