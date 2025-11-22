@@ -13,6 +13,7 @@ import { scoreLead } from '@/shared/leadScoring';
 import type { EnrichedAlert } from '@/shared/alertsDb';
 import ExpandableLeadRow, { type LeadScoreData } from '@/components/ExpandableLeadRow';
 import LocalTime from '@/components/LocalTime';
+import LookbackSelector from '@/components/LookbackSelector';
 
 /**
  * Census data structure
@@ -37,10 +38,29 @@ interface AlertWithLeads extends EnrichedAlert {
 
 
 /**
+ * Calculate the date N days ago from now
+ */
+function getDaysAgo(days: number): Date {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  return date;
+}
+
+/**
  * Main Page Component
  */
-export default async function LeadsPage() {
+export default async function LeadsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ days?: string }>;
+}) {
   const supabase = await createClient();
+  
+  // Parse lookback period from search params (default 7 days)
+  const params = await searchParams;
+  const lookbackDays = parseInt(params.days || '7', 10);
+  const validDays = [7, 14].includes(lookbackDays) ? lookbackDays : 7;
+  const sinceDate = getDaysAgo(validDays);
   
   let alertsWithLeads: AlertWithLeads[] = [];
   let error: string | null = null;
@@ -49,7 +69,9 @@ export default async function LeadsPage() {
     // Step 1: Fetch active alerts with history
     const alerts = await getActiveAlertsWithHistory(supabase, { 
       limit: 100,
-      includeMarine: false // Filter out marine alerts with no zip codes
+      includeMarine: false, // Filter out marine alerts with no zip codes
+      since: sinceDate,
+      excludeExpired: false, // Include expired alerts for historical lead context
     });
     
     console.log('[Leads Page] Loaded alerts:', alerts.length);
@@ -184,7 +206,8 @@ export default async function LeadsPage() {
               </div>
             </div>
           </div>
-          <div className="mt-4 flex items-center gap-4">
+          <div className="mt-4 flex flex-wrap items-center gap-4">
+            <LookbackSelector defaultDays={7} />
             <div className="text-sm text-gray-700">
               <span className="font-medium">Active Alerts:</span> {alertsWithLeads.length}
             </div>
@@ -288,8 +311,8 @@ export default async function LeadsPage() {
         <div className="mt-6 text-sm text-gray-500">
           <p>
             Lead scores are calculated in real-time based on census income data and alert characteristics.
-            Data refreshed from the National Weather Service and US Census ACS 5-year estimates (2023).
-            Times displayed in your local timezone.
+            Showing alerts from the last {validDays} days. Data refreshed from the National Weather Service 
+            and US Census ACS 5-year estimates (2023). Times displayed in your local timezone.
           </p>
         </div>
       </div>

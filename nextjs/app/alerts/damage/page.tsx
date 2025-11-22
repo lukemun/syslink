@@ -16,12 +16,12 @@ import ExpandableAlertRow from '@/components/ExpandableAlertRow';
 import LocalTime from '@/components/LocalTime';
 
 /**
- * Calculate the date 7 days ago from now
+ * Calculate the date when we want to start showing alerts
+ * Using Nov 21, 2025 as the cutoff since polygon/city refinement became stable
  */
-function getSevenDaysAgo(): Date {
-  const date = new Date();
-  date.setDate(date.getDate() - 7);
-  return date;
+function getRecentAlertsDate(): Date {
+  // Only show alerts from Nov 21 onwards (when refinement was working consistently)
+  return new Date('2025-11-21T00:00:00Z');
 }
 
 /**
@@ -34,19 +34,20 @@ export default async function DamageAlertsPage() {
   let error: string | null = null;
 
   try {
-    const sevenDaysAgo = getSevenDaysAgo();
+    const sinceDate = getRecentAlertsDate();
     
     alerts = await getActiveAlertsWithHistory(supabase, { 
       limit: 100,
       includeMarine: false, // Filter out marine alerts with no zip codes
       is_damaged: true, // Only show alerts flagged as damage-qualified
-      since: sevenDaysAgo, // Only alerts from last 7 days
+      since: sinceDate, // Only alerts since Nov 21 (when refinement was stable)
+      excludeExpired: false, // Show expired alerts for historical damage view
     });
     
     // Log for debugging
     console.log('[Damage Alerts Page] Loaded alerts:', {
       count: alerts.length,
-      sevenDaysAgo: sevenDaysAgo.toISOString(),
+      sinceDate: sinceDate.toISOString(),
       firstAlertId: alerts[0]?.id?.substring(0, 40),
       firstAlertEvent: alerts[0]?.event,
       firstAlertDamaged: alerts[0]?.is_damaged,
@@ -63,9 +64,9 @@ export default async function DamageAlertsPage() {
         <div className="mb-8">
           <div className="flex items-start justify-between">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900">Damage Alerts (Last 7 Days)</h1>
+              <h1 className="text-3xl font-bold text-gray-900">Recent Damage Alerts</h1>
               <p className="mt-2 text-sm text-gray-600">
-                Showing alerts with potential property damage from the last 7 days. 
+                Showing recent alerts with potential property damage and refined ZIP code targeting. 
                 These alerts meet damage-relevance criteria including extreme/severe severity, 
                 observed/likely certainty, and damage-capable event types.
               </p>
@@ -82,7 +83,7 @@ export default async function DamageAlertsPage() {
               <span className="font-medium">Total Damage Alerts:</span> {alerts.length}
             </div>
             <div className="text-sm text-gray-700">
-              <span className="font-medium">Date Range:</span> Last 7 days
+              <span className="font-medium">Date Range:</span> Since Nov 21, 2025
             </div>
           </div>
         </div>
@@ -98,9 +99,9 @@ export default async function DamageAlertsPage() {
         {/* Empty State */}
         {!error && alerts.length === 0 && (
           <div className="bg-green-50 border border-green-200 text-green-800 px-4 py-3 rounded">
-            <p className="font-medium">No damage alerts in the last 7 days</p>
+            <p className="font-medium">No recent damage alerts</p>
             <p className="text-sm mt-1">
-              There are currently no active weather alerts meeting damage criteria from the past week.
+              There are currently no weather alerts meeting damage criteria since Nov 21.
             </p>
           </div>
         )}
@@ -140,12 +141,12 @@ export default async function DamageAlertsPage() {
         )}
 
         {/* Footer Info */}
-        <div className="mt-6 text-sm text-gray-500">
-          <p>
-            Data refreshed from the National Weather Service. Times displayed in your local timezone.
-            Alerts are filtered to show only those with damage risk from the last 7 days.
-          </p>
-        </div>
+          <div className="mt-6 text-sm text-gray-500">
+            <p>
+              Data refreshed from the National Weather Service. Times displayed in your local timezone.
+              Alerts are filtered to show only recent damage events with refined ZIP code targeting.
+            </p>
+          </div>
       </div>
     </div>
   );

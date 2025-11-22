@@ -318,8 +318,7 @@ export async function getActiveAlertsForUI(
       .from('weather_alerts')
       .select('*, description:raw->properties->>description, headline:raw->properties->>headline, instruction:raw->properties->>instruction')
       .eq('status', status)
-      .order('onset', { ascending: true, nullsFirst: false })
-      .order('effective', { ascending: true })
+      .order('sent', { ascending: false })
       .limit(limit);
 
     if (is_damaged !== undefined) {
@@ -396,10 +395,7 @@ export async function getActiveAlertsForUI(
         created_at, updated_at
       FROM weather_alerts
       ${whereClause}
-      ORDER BY 
-        CASE WHEN onset IS NULL THEN 1 ELSE 0 END,
-        onset ASC,
-        effective ASC
+      ORDER BY sent DESC
       LIMIT $${params.length + 1}
     `;
     params.push(limit);
@@ -528,9 +524,10 @@ export async function getActiveAlertsWithHistory(
     limit?: number;
     includeMarine?: boolean; // If false, filters out alerts with no zip codes
     since?: Date; // Filter alerts sent on or after this date
+    excludeExpired?: boolean; // If false, includes expired alerts (useful for historical damage views)
   } = {}
 ): Promise<EnrichedAlert[]> {
-  const { status = 'Actual', is_damaged, limit = 100, includeMarine = true, since } = options;
+  const { status = 'Actual', is_damaged, limit = 100, includeMarine = true, since, excludeExpired = true } = options;
 
   // First get all non-superseded (current) alerts
   const currentAlerts = await getActiveAlertsForUI(client, {
@@ -538,6 +535,7 @@ export async function getActiveAlertsWithHistory(
     is_damaged,
     limit,
     since,
+    excludeExpired,
   });
 
   // Filter out marine alerts if requested
